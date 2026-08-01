@@ -142,6 +142,7 @@ impl TunPacketCodec {
 /// [`Encoder`]: tokio_util::codec::Encoder
 /// [`Framed`]: tokio_util::codec::Framed
 /// [`Stream`]: futures::stream::Stream
+// TODO: Replace the unresolved Stream intra-doc link with a dependency-free external link.
 impl Decoder for TunPacketCodec {
     type Item = TunPacket;
     type Error = io::Error;

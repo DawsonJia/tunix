@@ -43,6 +43,7 @@ impl Configuration {
     /// Adds an interface address.
     ///
     /// Call this once for each address family to configure a dual-stack interface.
+    /// Use [`Self::address_with_peer`] to supply the peer required by macOS IPv4 utun.
     ///
     /// ```
     /// let mut config = tunix::Configuration::default();
@@ -51,23 +52,53 @@ impl Configuration {
     ///     .address("fd00::1", 64);
     /// ```
     pub fn address<A: IntoIpAddr>(&mut self, value: A, prefix_len: u8) -> &mut Self {
-        match value
+        let address = value
             .into_ip_addr()
-            .and_then(|ip| NetworkAddress::new(ip, prefix_len))
-        {
-            Ok(address) => self.addresses.push(address),
-            Err(_) => self.invalid_address = true,
-        }
+            .and_then(|ip| NetworkAddress::new(ip, prefix_len));
 
-        self
+        self.push_address(address)
     }
 
-    /// Adds already-validated interface addresses.
+    /// Adds an interface address with a point-to-point peer.
+    ///
+    /// Linux and macOS support peers. Windows returns an unsupported-operation error.
+    /// macOS requires a `/128` prefix when an IPv6 peer is present.
+    ///
+    /// ```
+    /// let mut config = tunix::Configuration::default();
+    /// config.address_with_peer("192.0.2.1", 32, "192.0.2.2");
+    /// ```
+    pub fn address_with_peer<A: IntoIpAddr, P: IntoIpAddr>(
+        &mut self,
+        value: A,
+        prefix_len: u8,
+        peer: P,
+    ) -> &mut Self {
+        let address = value.into_ip_addr().and_then(|ip| {
+            let peer = peer.into_ip_addr()?;
+            NetworkAddress::new(ip, prefix_len)?.with_peer(peer)
+        });
+
+        self.push_address(address)
+    }
+
+    /// Adds structurally validated interface addresses.
+    ///
+    /// Platform-specific peer restrictions are checked when the interface is configured.
     pub fn addresses<I>(&mut self, values: I) -> &mut Self
     where
         I: IntoIterator<Item = NetworkAddress>,
     {
         self.addresses.extend(values);
+        self
+    }
+
+    fn push_address(&mut self, address: Result<NetworkAddress>) -> &mut Self {
+        match address {
+            Ok(address) => self.addresses.push(address),
+            Err(_) => self.invalid_address = true,
+        }
+
         self
     }
 

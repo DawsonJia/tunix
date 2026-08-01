@@ -2,13 +2,14 @@ use tunix::{Configuration, interface::Interface};
 
 #[test]
 #[cfg(target_os = "linux")]
+#[ignore = "requires /dev/net/tun and CAP_NET_ADMIN"]
 fn create_for_linux() {
     let mut config = Configuration::default();
 
     let mut dev = config
         .name("tun0")
-        .address("192.168.50.1", 24)
-        .address("fd00::1", 64)
+        .address_with_peer("192.168.50.1", 32, "192.168.50.2")
+        .address_with_peer("fd00::1", 128, "fd00::2")
         .mtu(1400)
         .build()
         .unwrap();
@@ -22,17 +23,13 @@ fn create_for_linux() {
 
 #[test]
 #[cfg(target_os = "macos")]
+#[ignore = "requires root privileges"]
 fn create_for_macos() {
-    if unsafe { libc::geteuid() } != 0 {
-        eprintln!("skipping macOS TUN create test: root privileges required");
-        return;
-    }
-
     let mut config = Configuration::default();
 
     let dev = config
         .name("utun6")
-        .address("192.168.50.1", 24)
+        .address_with_peer("192.168.50.1", 32, "192.168.50.2")
         .address("fd00::1", 64)
         .mtu(1400)
         .up()
@@ -45,7 +42,7 @@ fn create_for_macos() {
 
 #[test]
 #[cfg(target_os = "windows")]
-#[ignore]
+#[ignore = "requires Administrator privileges and Wintun"]
 fn create_for_windows() {
     let mut config = Configuration::default();
 

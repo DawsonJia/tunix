@@ -62,16 +62,7 @@ pub fn add_address(interface_name: &str, address: NetworkAddress) -> io::Result<
         )
     })?;
 
-    let ip = address.ip();
-    let mut message = AddressMessage::default();
-    message.header.family = AddressFamily::from(ip);
-    message.header.prefix_len = address.prefix_len();
-    message.header.scope = AddressScope::Universe;
-    message.header.index = interface_index;
-    message.attributes.push(AddressAttribute::Address(ip));
-    if ip.is_ipv4() {
-        message.attributes.push(AddressAttribute::Local(ip));
-    }
+    let message = address_message(interface_index, address);
 
     let sequence = 1;
     let mut header = NetlinkHeader::default();
@@ -91,10 +82,55 @@ pub fn add_address(interface_name: &str, address: NetworkAddress) -> io::Result<
     recv_ack(&mut socket, sequence, assigned.nl_pid)
 }
 
+fn address_message(interface_index: u32, address: NetworkAddress) -> AddressMessage {
+    let local = address.ip();
+    let mut message = AddressMessage::default();
+    message.header.family = AddressFamily::from(local);
+    message.header.prefix_len = address.prefix_len();
+    message.header.scope = AddressScope::Universe;
+    message.header.index = interface_index;
+    message
+        .attributes
+        .push(AddressAttribute::Address(address.peer().unwrap_or(local)));
+    message.attributes.push(AddressAttribute::Local(local));
+
+    message
+}
+
 fn recv_ack(socket: &mut Fd, sequence: u32, port_id: u32) -> io::Result<()> {
+    const ACK_TIMEOUT: libc::timeval = libc::timeval {
+        tv_sec: 5,
+        tv_usec: 0,
+    };
+
+    // SAFETY: ACK_TIMEOUT points to a valid timeval for the duration of the call.
+    cvt(unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            (&ACK_TIMEOUT as *const libc::timeval).cast(),
+            std::mem::size_of::<libc::timeval>() as _,
+        )
+    })?;
+
     loop {
         let mut buffer = [0; 4096];
-        let received = socket.read(&mut buffer)?;
+        let received = match socket.read(&mut buffer) {
+            Ok(received) => received,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timed out waiting for netlink address acknowledgement",
+                ));
+            }
+            Err(error) => return Err(error),
+        };
         for message in parse_messages(&buffer[..received])? {
             if message.header.sequence_number != sequence || message.header.port_number != port_id {
                 continue;
@@ -144,3 +180,7 @@ fn netlink_error(code: NonZeroI32) -> io::Error {
     let raw = code.get();
     io::Error::from_raw_os_error(if raw < 0 { -raw } else { raw })
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/src/platform/linux/sys.rs"]
+mod tests;

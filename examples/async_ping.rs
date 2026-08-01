@@ -5,13 +5,11 @@ use packet::{Builder, Packet, icmp, ip};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tunix::{Configuration, TunPacket};
 
-// sudo route -q -n add -inet 192.168.108.0/24 -interface utun8
-
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dev = Configuration::default()
-        .address("192.168.108.2", 24)
+        .address_with_peer("192.168.108.2", 32, "192.168.108.1")
         .up()
         .build_async()?;
 

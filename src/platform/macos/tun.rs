@@ -157,28 +157,16 @@ impl Tun {
         ifr
     }
 
-    fn set_alias(&mut self, addr: Ipv4Addr, broadaddr: Ipv4Addr, mask: Ipv4Addr) -> Result<()> {
-        let mut ifar: ifaliasreq = unsafe { mem::zeroed() };
-        write_if_name(&self.name, &mut ifar.ifra_name)?;
-
-        ifar.ifra_addr = ipv4_sockaddr(addr);
-        ifar.ifra_broadaddr = ipv4_sockaddr(broadaddr);
-        ifar.ifra_mask = ipv4_sockaddr(mask);
+    fn set_alias_v4(&mut self, address: crate::NetworkAddress) -> Result<()> {
+        let ifar = ipv4_alias_request(&self.name, address)?;
 
         unsafe { siocaifaddr(self.ctl.as_raw_fd(), &ifar) }?;
 
         Ok(())
     }
 
-    fn set_alias_v6(&mut self, addr: Ipv6Addr, prefix_len: u8) -> Result<()> {
-        let mut ifar: in6_aliasreq = unsafe { mem::zeroed() };
-        write_if_name(&self.name, &mut ifar.ifra_name)?;
-
-        ifar.ifra_addr = ipv6_sockaddr(addr);
-        ifar.ifra_dstaddr = ipv6_sockaddr(Ipv6Addr::UNSPECIFIED);
-        ifar.ifra_prefixmask = ipv6_sockaddr(ipv6_netmask(prefix_len));
-        ifar.ifra_lifetime.ia6t_vltime = u32::MAX;
-        ifar.ifra_lifetime.ia6t_pltime = u32::MAX;
+    fn set_alias_v6(&mut self, address: crate::NetworkAddress) -> Result<()> {
+        let ifar = ipv6_alias_request(&self.name, address)?;
 
         unsafe { siocaifaddr_in6(self.ctl_v6.as_raw_fd(), &ifar) }?;
 
@@ -247,8 +235,8 @@ impl Interface for Tun {
 
     fn add_address(&mut self, address: crate::NetworkAddress) -> Result<()> {
         match address.ip() {
-            IpAddr::V4(addr) => self.set_alias(addr, addr, ipv4_netmask(address.prefix_len())),
-            IpAddr::V6(addr) => self.set_alias_v6(addr, address.prefix_len()),
+            IpAddr::V4(_) => self.set_alias_v4(address),
+            IpAddr::V6(_) => self.set_alias_v6(address),
         }
     }
 
@@ -293,6 +281,52 @@ fn ipv6_sockaddr(addr: Ipv6Addr) -> libc::sockaddr_in6 {
     };
 
     socket_addr
+}
+
+fn ipv4_alias_request(name: &str, address: crate::NetworkAddress) -> Result<ifaliasreq> {
+    let Some(peer) = address.peer() else {
+        // TODO: Support peerless IPv4 only when configuration owns an explicit route policy.
+        return Err(Error::InvalidConfig);
+    };
+    let (IpAddr::V4(addr), IpAddr::V4(peer)) = (address.ip(), peer) else {
+        return Err(Error::InvalidAddress);
+    };
+
+    let mut ifar: ifaliasreq = unsafe { mem::zeroed() };
+    write_if_name(name, &mut ifar.ifra_name)?;
+
+    ifar.ifra_addr = ipv4_sockaddr(addr);
+    ifar.ifra_broadaddr = ipv4_sockaddr(peer);
+    ifar.ifra_mask = ipv4_sockaddr(ipv4_netmask(address.prefix_len()));
+
+    Ok(ifar)
+}
+
+fn ipv6_alias_request(name: &str, address: crate::NetworkAddress) -> Result<in6_aliasreq> {
+    let IpAddr::V6(addr) = address.ip() else {
+        return Err(Error::InvalidAddress);
+    };
+    let peer = match address.peer() {
+        Some(IpAddr::V6(peer)) => Some(peer),
+        Some(IpAddr::V4(_)) => return Err(Error::InvalidAddress),
+        None => None,
+    };
+    if peer.is_some() && address.prefix_len() != 128 {
+        return Err(Error::InvalidAddress);
+    }
+
+    let mut ifar: in6_aliasreq = unsafe { mem::zeroed() };
+    write_if_name(name, &mut ifar.ifra_name)?;
+
+    ifar.ifra_addr = ipv6_sockaddr(addr);
+    if let Some(peer) = peer {
+        ifar.ifra_dstaddr = ipv6_sockaddr(peer);
+    }
+    ifar.ifra_prefixmask = ipv6_sockaddr(ipv6_netmask(address.prefix_len()));
+    ifar.ifra_lifetime.ia6t_vltime = u32::MAX;
+    ifar.ifra_lifetime.ia6t_pltime = u32::MAX;
+
+    Ok(ifar)
 }
 
 fn ipv4_netmask(prefix_len: u8) -> Ipv4Addr {

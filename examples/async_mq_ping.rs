@@ -55,7 +55,7 @@ async fn reply_ping(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let queues = Configuration::default()
-        .address("192.168.108.2", 24)
+        .address_with_peer("192.168.108.2", 32, "192.168.108.1")
         .queues(2)
         .up()
         .build_async_multi_queue()?;

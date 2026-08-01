@@ -18,6 +18,14 @@ fn invalid_prefix_is_reported_by_build() {
 }
 
 #[test]
+fn mixed_family_peer_is_reported_by_build() {
+    let mut config = Configuration::default();
+    let result = config.address_with_peer("192.0.2.1", 32, "fd00::1").build();
+
+    assert!(matches!(result, Err(Error::InvalidAddress)));
+}
+
+#[test]
 fn single_queue_build_rejects_zero_and_multiple_queues() {
     for queues in [0, 2] {
         let result = Configuration::default().queues(queues).build();

@@ -27,7 +27,7 @@ pub trait Interface /*: Read + Write*/ {
     fn flags(&self, flags: Option<i16>) -> Result<i16>;
     // fn set_enabled(&mut self, value: bool) -> Result<()>;
 
-    /// Adds either an IPv4 or IPv6 address through the platform-native API.
+    /// Adds either an IPv4 or IPv6 address and its optional point-to-point peer.
     fn add_address(&mut self, address: NetworkAddress) -> Result<()>;
 
     fn mtu(&self) -> Result<i32>;

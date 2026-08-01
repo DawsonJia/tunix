@@ -1,12 +1,13 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use crate::error::{Error, Result};
 
-/// An IP address assigned to a network interface and its on-link prefix length.
+/// An IP address assigned to an interface, with an optional point-to-point peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NetworkAddress {
     ip: IpAddr,
     prefix_len: u8,
+    peer: Option<IpAddr>,
 }
 
 impl NetworkAddress {
@@ -17,7 +18,26 @@ impl NetworkAddress {
             return Err(Error::InvalidAddress);
         }
 
-        Ok(Self { ip, prefix_len })
+        Ok(Self {
+            ip,
+            prefix_len,
+            peer: None,
+        })
+    }
+
+    /// Sets the peer address for a point-to-point interface.
+    ///
+    /// The peer must use the same address family as the local address.
+    /// Platform-specific restrictions are checked when the address is applied. Windows does not
+    /// support peers, and macOS requires a `/128` prefix for IPv6 peers. A host prefix (`/32` or
+    /// `/128`) is the portable choice for a point-to-point peer.
+    pub fn with_peer(mut self, peer: IpAddr) -> Result<Self> {
+        if self.ip.is_ipv4() != peer.is_ipv4() {
+            return Err(Error::InvalidAddress);
+        }
+
+        self.peer = Some(peer);
+        Ok(self)
     }
 
     /// Returns the IP address.
@@ -28,6 +48,11 @@ impl NetworkAddress {
     /// Returns the CIDR prefix length.
     pub fn prefix_len(self) -> u8 {
         self.prefix_len
+    }
+
+    /// Returns the point-to-point peer address, if one was configured.
+    pub fn peer(self) -> Option<IpAddr> {
+        self.peer
     }
 }
 
@@ -118,5 +143,29 @@ impl IntoIpAddr for SocketAddr {
 impl IntoIpAddr for &SocketAddr {
     fn into_ip_addr(self) -> Result<IpAddr> {
         Ok(self.ip())
+    }
+}
+
+impl IntoIpAddr for SocketAddrV4 {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok((*self.ip()).into())
+    }
+}
+
+impl IntoIpAddr for &SocketAddrV4 {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok((*self.ip()).into())
+    }
+}
+
+impl IntoIpAddr for SocketAddrV6 {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok((*self.ip()).into())
+    }
+}
+
+impl IntoIpAddr for &SocketAddrV6 {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok((*self.ip()).into())
     }
 }

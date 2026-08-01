@@ -7,7 +7,7 @@ use tunix::Configuration;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut dev = Configuration::default()
-        .address("192.168.108.1", 24)
+        .address_with_peer("192.168.108.1", 32, "192.168.108.2")
         .address("fd00::1", 64)
         .up()
         .build_async()?;
