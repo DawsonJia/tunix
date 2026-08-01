@@ -35,7 +35,7 @@ pub fn set_mtu(luid: NET_LUID_LH, mtu: i32) -> io::Result<()> {
     }
 }
 
-pub fn add_address(luid: NET_LUID_LH, address: NetworkAddress) -> io::Result<()> {
+pub(super) fn validate_address(address: NetworkAddress) -> io::Result<()> {
     if address.peer().is_some() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -43,7 +43,23 @@ pub fn add_address(luid: NET_LUID_LH, address: NetworkAddress) -> io::Result<()>
         ));
     }
 
+    Ok(())
+}
+
+pub(super) fn validate_addresses(addresses: &[NetworkAddress]) -> io::Result<()> {
+    for &address in addresses {
+        validate_address(address)?;
+    }
+
+    Ok(())
+}
+
+pub fn add_address(luid: NET_LUID_LH, address: NetworkAddress) -> io::Result<()> {
+    validate_address(address)?;
+
     let mut row = address_identity(luid, address.ip());
+    // TODO: If add_address must guarantee current readiness, use one bounded DAD policy after
+    // both Create and Set.
     match unsafe { GetUnicastIpAddressEntry(&mut row) } {
         Ok(()) => {
             apply_address_properties(&mut row, address);
@@ -113,7 +129,7 @@ fn apply_address_properties(row: &mut MIB_UNICASTIPADDRESS_ROW, address: Network
 
 fn apply_new_address_properties(row: &mut MIB_UNICASTIPADDRESS_ROW, address: NetworkAddress) {
     apply_address_properties(row, address);
-    // Windows 10+ makes the address usable while optimistic DAD runs.
+    // Windows 10+ starts the address in Preferred while optimistic DAD continues.
     row.DadState = IpDadStatePreferred;
 }
 

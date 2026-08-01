@@ -29,8 +29,8 @@ impl NetworkAddress {
     ///
     /// The peer must use the same address family as the local address.
     /// Platform-specific restrictions are checked when the address is applied. Windows does not
-    /// support peers, and macOS requires a `/128` prefix for IPv6 peers. A host prefix (`/32` or
-    /// `/128`) is the portable choice for a point-to-point peer.
+    /// support peers. macOS rejects IPv4 `/0` and requires a `/128` prefix for IPv6 peers. A host
+    /// prefix (`/32` or `/128`) is the portable choice for a point-to-point peer.
     pub fn with_peer(mut self, peer: IpAddr) -> Result<Self> {
         if self.ip.is_ipv4() != peer.is_ipv4() {
             return Err(Error::InvalidAddress);

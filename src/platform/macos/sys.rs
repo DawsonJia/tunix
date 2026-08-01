@@ -40,6 +40,10 @@ const _: [(); 128] = [(); std::mem::size_of::<in6_aliasreq>()];
 nix::ioctl_write_ptr!(siocsifflags, b'i', 16, ifreq);
 nix::ioctl_readwrite!(siocgifflags, b'i', 17, ifreq);
 
+nix::ioctl_write_ptr!(siocsifaddr, b'i', 12, ifreq);
+nix::ioctl_write_ptr!(siocsifnetmask, b'i', 22, ifreq);
+nix::ioctl_write_ptr!(siocdifaddr, b'i', 25, ifreq);
+
 nix::ioctl_write_ptr!(siocsifmtu, b'i', 52, ifreq);
 nix::ioctl_readwrite!(siocgifmtu, b'i', 51, ifreq);
 

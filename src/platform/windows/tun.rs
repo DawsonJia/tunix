@@ -126,6 +126,8 @@ impl Tun {
             return Err(Error::InvalidQueuesNumber);
         }
 
+        sys::validate_addresses(&config.addresses)?;
+
         let wintun = unsafe { load_from_path(&config.platform.wintun_file)? };
         let name = config.name.as_deref().unwrap_or("wintun");
         let adapter = match Adapter::open(&wintun, name) {
@@ -203,6 +205,15 @@ impl Interface for Tun {
         Ok(())
     }
 
+    fn add_addresses(&mut self, addresses: &[crate::NetworkAddress]) -> Result<()> {
+        sys::validate_addresses(addresses)?;
+        for &address in addresses {
+            self.add_address(address)?;
+        }
+
+        Ok(())
+    }
+
     fn mtu(&self) -> Result<i32> {
         Ok(self.mtu)
     }
@@ -233,3 +244,7 @@ impl Write for Tun {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/src/platform/windows/tun.rs"]
+mod tests;

@@ -43,7 +43,9 @@ impl Configuration {
     /// Adds an interface address.
     ///
     /// Call this once for each address family to configure a dual-stack interface.
-    /// Use [`Self::address_with_peer`] to supply the peer required by macOS IPv4 utun.
+    /// macOS supports one peerless IPv4 primary and applies it before IPv4 aliases regardless of
+    /// insertion order. Additional IPv4 addresses require a peer, and IPv4 prefixes must be
+    /// between `/1` and `/32`. A peerful IPv4 cannot reuse the peerless primary's local address.
     ///
     /// ```
     /// let mut config = tunix::Configuration::default();
@@ -61,8 +63,9 @@ impl Configuration {
 
     /// Adds an interface address with a point-to-point peer.
     ///
-    /// Linux and macOS support peers. Windows returns an unsupported-operation error.
-    /// macOS requires a `/128` prefix when an IPv6 peer is present.
+    /// Linux and macOS support peers. Windows returns an unsupported-operation error. macOS
+    /// rejects IPv4 `/0`, rejects a local address collision with its peerless primary, and requires
+    /// a `/128` prefix when an IPv6 peer is present.
     ///
     /// ```
     /// let mut config = tunix::Configuration::default();
