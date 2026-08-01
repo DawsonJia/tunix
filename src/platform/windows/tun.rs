@@ -1,7 +1,6 @@
 use std::{
     ffi::OsString,
     io::{self, Read, Write},
-    net::{IpAddr, Ipv4Addr},
     sync::Arc,
 };
 
@@ -177,17 +176,6 @@ impl Tun {
     fn adapter(&self) -> Arc<Adapter> {
         self.queue.session.get_adapter()
     }
-
-    fn first_ipv4(values: Vec<IpAddr>) -> Result<Ipv4Addr> {
-        values
-            .into_iter()
-            // TODO: support an explicit selection policy if adapters commonly carry multiple IPv4 addresses.
-            .find_map(|addr| match addr {
-                IpAddr::V4(addr) => Some(addr),
-                IpAddr::V6(_) => None,
-            })
-            .ok_or(Error::InvalidConfig)
-    }
 }
 
 impl Interface for Tun {
@@ -210,42 +198,9 @@ impl Interface for Tun {
         Ok(0)
     }
 
-    fn address(&self) -> Result<Ipv4Addr> {
-        Self::first_ipv4(self.adapter().get_addresses()?)
-    }
-
-    fn set_address(&mut self, addr: Ipv4Addr) -> Result<()> {
-        Ok(self.adapter().set_address(addr)?)
-    }
-
-    fn destination(&self) -> Result<Ipv4Addr> {
-        Self::first_ipv4(self.adapter().get_gateways()?)
-    }
-
-    fn set_destination(&mut self, addr: Ipv4Addr) -> Result<()> {
-        Ok(self.adapter().set_gateway(Some(addr))?)
-    }
-
-    fn broadcast(&self) -> Result<Ipv4Addr> {
-        Err(Error::NotImplemented)
-    }
-
-    fn set_broadcast(&mut self, _addr: Ipv4Addr) -> Result<()> {
-        Err(Error::NotImplemented)
-    }
-
-    fn netmask(&self) -> Result<Ipv4Addr> {
-        match self
-            .adapter()
-            .get_netmask_of_address(&IpAddr::V4(self.address()?))?
-        {
-            IpAddr::V4(addr) => Ok(addr),
-            IpAddr::V6(_) => Err(Error::InvalidConfig),
-        }
-    }
-
-    fn set_netmask(&mut self, addr: Ipv4Addr) -> Result<()> {
-        Ok(self.adapter().set_netmask(addr)?)
+    fn add_address(&mut self, address: crate::NetworkAddress) -> Result<()> {
+        sys::add_address(self.adapter().get_luid(), address)?;
+        Ok(())
     }
 
     fn mtu(&self) -> Result<i32> {

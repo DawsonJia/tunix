@@ -4,11 +4,7 @@ use tunix::Configuration;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Configuration::default();
 
-    config
-        .address("10.0.0.9")
-        .netmask("255.255.255.0")
-        .destination("10.0.0.1")
-        .up();
+    config.address("10.0.0.9", 24).address("fd00::9", 64).up();
 
     #[cfg(target_os = "linux")]
     let config = config.platform(|tun_conf| {

@@ -1,11 +1,9 @@
-use std::net::Ipv4Addr;
-
 #[cfg(all(
     feature = "async",
     any(target_os = "linux", target_os = "macos", target_os = "windows")
 ))]
 use crate::AsyncTun;
-use crate::address::IntoIpv4Addr;
+use crate::address::{IntoIpAddr, NetworkAddress};
 use crate::error::{Error, Result};
 use crate::tun::{Tun, TunConf};
 
@@ -21,10 +19,7 @@ pub struct Configuration {
     pub(crate) name: Option<String>,
     pub(crate) platform: TunConf,
 
-    pub(crate) address: Option<Ipv4Addr>,
-    pub(crate) destination: Option<Ipv4Addr>,
-    pub(crate) broadcast: Option<Ipv4Addr>,
-    pub(crate) netmask: Option<Ipv4Addr>,
+    pub(crate) addresses: Vec<NetworkAddress>,
     // Keep invalid address input sticky so a later setter call cannot silently hide it.
     pub(crate) invalid_address: bool,
     pub(crate) mtu: Option<i32>,
@@ -45,39 +40,34 @@ impl Configuration {
         self
     }
 
-    pub fn address<A: IntoIpv4Addr>(&mut self, value: A) -> &mut Self {
-        match value.into_ipv4() {
-            Ok(addr) => self.address = Some(addr),
+    /// Adds an interface address.
+    ///
+    /// Call this once for each address family to configure a dual-stack interface.
+    ///
+    /// ```
+    /// let mut config = tunix::Configuration::default();
+    /// config
+    ///     .address("192.0.2.1", 24)
+    ///     .address("fd00::1", 64);
+    /// ```
+    pub fn address<A: IntoIpAddr>(&mut self, value: A, prefix_len: u8) -> &mut Self {
+        match value
+            .into_ip_addr()
+            .and_then(|ip| NetworkAddress::new(ip, prefix_len))
+        {
+            Ok(address) => self.addresses.push(address),
             Err(_) => self.invalid_address = true,
         }
 
         self
     }
 
-    pub fn destination<A: IntoIpv4Addr>(&mut self, value: A) -> &mut Self {
-        match value.into_ipv4() {
-            Ok(addr) => self.destination = Some(addr),
-            Err(_) => self.invalid_address = true,
-        }
-
-        self
-    }
-
-    pub fn broadcast<A: IntoIpv4Addr>(&mut self, value: A) -> &mut Self {
-        match value.into_ipv4() {
-            Ok(addr) => self.broadcast = Some(addr),
-            Err(_) => self.invalid_address = true,
-        }
-
-        self
-    }
-
-    pub fn netmask<A: IntoIpv4Addr>(&mut self, value: A) -> &mut Self {
-        match value.into_ipv4() {
-            Ok(addr) => self.netmask = Some(addr),
-            Err(_) => self.invalid_address = true,
-        }
-
+    /// Adds already-validated interface addresses.
+    pub fn addresses<I>(&mut self, values: I) -> &mut Self
+    where
+        I: IntoIterator<Item = NetworkAddress>,
+    {
+        self.addresses.extend(values);
         self
     }
 
@@ -157,33 +147,5 @@ impl Configuration {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::Configuration;
-    use crate::error::Error;
-
-    #[test]
-    fn invalid_address_is_reported_by_build() {
-        let mut config = Configuration::default();
-        let result = config.address("not an ip").build();
-
-        assert!(matches!(result, Err(Error::InvalidAddress)));
-    }
-
-    #[test]
-    fn single_queue_build_rejects_zero_and_multiple_queues() {
-        for queues in [0, 2] {
-            let result = Configuration::default().queues(queues).build();
-            assert!(matches!(result, Err(Error::InvalidQueuesNumber)));
-        }
-    }
-
-    #[test]
-    #[cfg(all(
-        feature = "async",
-        any(target_os = "linux", target_os = "macos", target_os = "windows")
-    ))]
-    fn single_queue_async_build_rejects_multiple_queues() {
-        let result = Configuration::default().queues(2).build_async();
-        assert!(matches!(result, Err(Error::InvalidQueuesNumber)));
-    }
-}
+#[path = "../tests/unit/src/configuration.rs"]
+mod tests;

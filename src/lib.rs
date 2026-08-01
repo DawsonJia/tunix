@@ -2,6 +2,7 @@ mod configuration;
 pub use configuration::{Configuration, Layer};
 
 mod address;
+pub use address::{IntoIpAddr, NetworkAddress};
 mod error;
 pub use error::{Error, Result};
 pub mod interface;

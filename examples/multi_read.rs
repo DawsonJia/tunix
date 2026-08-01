@@ -6,10 +6,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::{io, io::Read, thread};
 
     let tuns = Configuration::default()
-        .address("10.0.0.9")
-        .netmask("255.255.255.0")
+        .address("10.0.0.9", 24)
         .queues(2)
-        .destination("10.0.0.1")
         .platform(|tun_conf| {
             tun_conf.packet_information(true);
         })

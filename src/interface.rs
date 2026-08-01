@@ -1,26 +1,14 @@
+use crate::NetworkAddress;
 use crate::configuration::Configuration;
 use crate::error::*;
-use std::net::Ipv4Addr;
 
 pub trait Interface /*: Read + Write*/ {
     // type Queue: Read + Write;
     type Queue;
 
     fn configure(&mut self, config: &Configuration) -> Result<()> {
-        if let Some(addr) = config.address {
-            self.set_address(addr)?;
-        }
-
-        if let Some(addr) = config.destination {
-            self.set_destination(addr)?;
-        }
-
-        if let Some(addr) = config.broadcast {
-            self.set_broadcast(addr)?;
-        }
-
-        if let Some(addr) = config.netmask {
-            self.set_netmask(addr)?;
+        for address in &config.addresses {
+            self.add_address(*address)?;
         }
 
         if let Some(mtu) = config.mtu {
@@ -39,17 +27,8 @@ pub trait Interface /*: Read + Write*/ {
     fn flags(&self, flags: Option<i16>) -> Result<i16>;
     // fn set_enabled(&mut self, value: bool) -> Result<()>;
 
-    fn address(&self) -> Result<Ipv4Addr>;
-    fn set_address(&mut self, addr: Ipv4Addr) -> Result<()>;
-
-    fn destination(&self) -> Result<Ipv4Addr>;
-    fn set_destination(&mut self, addr: Ipv4Addr) -> Result<()>;
-
-    fn broadcast(&self) -> Result<Ipv4Addr>;
-    fn set_broadcast(&mut self, addr: Ipv4Addr) -> Result<()>;
-
-    fn netmask(&self) -> Result<Ipv4Addr>;
-    fn set_netmask(&mut self, addr: Ipv4Addr) -> Result<()>;
+    /// Adds either an IPv4 or IPv6 address through the platform-native API.
+    fn add_address(&mut self, address: NetworkAddress) -> Result<()>;
 
     fn mtu(&self) -> Result<i32>;
     fn set_mtu(&mut self, mtu: i32) -> Result<()>;

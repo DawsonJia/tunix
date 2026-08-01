@@ -1,5 +1,4 @@
 use crate::{
-    address::Ipv4AddrExt,
     configuration::{Configuration, Layer},
     error::{Error, Result},
     interface::Interface,
@@ -9,7 +8,6 @@ use libc::{c_int, c_short};
 use std::{
     ffi::CStr,
     io::{self, Read, Write},
-    net::Ipv4Addr,
     os::fd::{AsRawFd, RawFd},
     sync::{Arc, Mutex},
 };
@@ -203,71 +201,8 @@ impl Interface for Tun {
         Ok(unsafe { ifr.ifr_ifru.ifru_flags })
     }
 
-    fn address(&self) -> Result<Ipv4Addr> {
-        let mut ifr = self.ifreq();
-
-        unsafe { siocgifaddr(self.ctl.lock().unwrap().as_raw_fd(), &mut ifr) }?;
-
-        Ok(Ipv4Addr::from_sockaddr(unsafe { ifr.ifr_ifru.ifru_addr }))
-    }
-
-    fn set_address(&mut self, addr: Ipv4Addr) -> Result<()> {
-        let mut ifr = self.ifreq();
-        ifr.ifr_ifru.ifru_addr = addr.to_sockaddr();
-
-        unsafe { siocsifaddr(self.ctl.lock().unwrap().as_raw_fd(), &ifr) }?;
-
-        Ok(())
-    }
-
-    fn destination(&self) -> Result<std::net::Ipv4Addr> {
-        let mut ifr = self.ifreq();
-
-        unsafe { siocgifdstaddr(self.ctl.lock().unwrap().as_raw_fd(), &mut ifr) }?;
-
-        Ok(Ipv4Addr::from_sockaddr(unsafe { ifr.ifr_ifru.ifru_addr }))
-    }
-
-    fn set_destination(&mut self, addr: std::net::Ipv4Addr) -> Result<()> {
-        let mut ifr = self.ifreq();
-        ifr.ifr_ifru.ifru_addr = addr.to_sockaddr();
-
-        unsafe { siocsifdstaddr(self.ctl.lock().unwrap().as_raw_fd(), &ifr) }?;
-
-        Ok(())
-    }
-
-    fn broadcast(&self) -> Result<std::net::Ipv4Addr> {
-        let mut ifr = self.ifreq();
-
-        unsafe { siocgifbrdaddr(self.ctl.lock().unwrap().as_raw_fd(), &mut ifr) }?;
-
-        Ok(Ipv4Addr::from_sockaddr(unsafe { ifr.ifr_ifru.ifru_addr }))
-    }
-
-    fn set_broadcast(&mut self, addr: std::net::Ipv4Addr) -> Result<()> {
-        let mut ifr = self.ifreq();
-        ifr.ifr_ifru.ifru_addr = addr.to_sockaddr();
-
-        unsafe { siocsifbrdaddr(self.ctl.lock().unwrap().as_raw_fd(), &ifr) }?;
-
-        Ok(())
-    }
-
-    fn netmask(&self) -> Result<std::net::Ipv4Addr> {
-        let mut ifr = self.ifreq();
-
-        unsafe { siocgifnetmask(self.ctl.lock().unwrap().as_raw_fd(), &mut ifr) }?;
-
-        Ok(Ipv4Addr::from_sockaddr(unsafe { ifr.ifr_ifru.ifru_addr }))
-    }
-
-    fn set_netmask(&mut self, addr: std::net::Ipv4Addr) -> Result<()> {
-        let mut ifr = self.ifreq();
-        ifr.ifr_ifru.ifru_addr = addr.to_sockaddr();
-
-        unsafe { siocsifnetmask(self.ctl.lock().unwrap().as_raw_fd(), &ifr) }?;
-
+    fn add_address(&mut self, address: crate::NetworkAddress) -> Result<()> {
+        add_address(&self.name.lock().unwrap(), address)?;
         Ok(())
     }
 

@@ -1,40 +1,96 @@
-use std::io;
+use std::{io, net::IpAddr};
 
 use windows::Win32::{
+    Foundation::BOOLEAN,
     NetworkManagement::{
         IpHelper::{
-            GetIpInterfaceEntry, InitializeIpInterfaceEntry, MIB_IPINTERFACE_ROW,
-            SetIpInterfaceEntry,
+            CreateUnicastIpAddressEntry, DeleteUnicastIpAddressEntry, GetIpInterfaceEntry,
+            GetUnicastIpAddressEntry, InitializeIpInterfaceEntry, InitializeUnicastIpAddressEntry,
+            MIB_IPINTERFACE_ROW, MIB_UNICASTIPADDRESS_ROW, SetIpInterfaceEntry,
         },
         Ndis::NET_LUID_LH,
     },
-    Networking::WinSock::AF_INET,
+    Networking::WinSock::{
+        AF_INET, AF_INET6, IpDadStatePreferred, IpPrefixOriginManual, IpSuffixOriginManual,
+        SOCKADDR_INET,
+    },
 };
+
+use crate::NetworkAddress;
 
 pub fn set_mtu(luid: NET_LUID_LH, mtu: i32) -> io::Result<()> {
     let mtu = mtu
         .try_into()
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "MTU must be non-negative"))?;
 
-    let mut row = MIB_IPINTERFACE_ROW::default();
-    unsafe {
-        InitializeIpInterfaceEntry(&mut row);
-    }
-    row.Family = AF_INET;
-    row.InterfaceLuid = luid;
+    for family in [AF_INET, AF_INET6] {
+        let mut row = MIB_IPINTERFACE_ROW::default();
+        unsafe {
+            InitializeIpInterfaceEntry(&mut row);
+        }
+        row.Family = family;
+        row.InterfaceLuid = luid;
 
-    unsafe {
-        GetIpInterfaceEntry(&mut row).map_err(io::Error::other)?;
-    }
-    row.NlMtu = mtu;
-    // On Windows, GetIpInterfaceEntry can return an IPv4 row with
-    // SitePrefixLength set to an IPv6-sized value (e.g. 64).
-    // SetIpInterfaceEntry validates the full row, so normalize this before
-    // writing the MTU back.
-    row.SitePrefixLength = 0;
-    unsafe {
-        SetIpInterfaceEntry(&mut row).map_err(io::Error::other)?;
+        unsafe {
+            GetIpInterfaceEntry(&mut row).map_err(io::Error::other)?;
+        }
+        row.NlMtu = mtu;
+        // GetIpInterfaceEntry can return a row whose SitePrefixLength is not
+        // valid input for SetIpInterfaceEntry.
+        row.SitePrefixLength = 0;
+        unsafe {
+            SetIpInterfaceEntry(&mut row).map_err(io::Error::other)?;
+        }
     }
 
     Ok(())
+}
+
+pub fn add_address(luid: NET_LUID_LH, address: NetworkAddress) -> io::Result<()> {
+    let socket_address = socket_address(address.ip());
+
+    let mut probe = MIB_UNICASTIPADDRESS_ROW::default();
+    unsafe {
+        InitializeUnicastIpAddressEntry(&mut probe);
+    }
+    probe.InterfaceLuid = luid;
+    probe.Address = socket_address;
+
+    if unsafe { GetUnicastIpAddressEntry(&mut probe) }.is_ok() {
+        unsafe {
+            DeleteUnicastIpAddressEntry(&probe).map_err(io::Error::other)?;
+        }
+    }
+
+    let mut row = MIB_UNICASTIPADDRESS_ROW::default();
+    unsafe {
+        InitializeUnicastIpAddressEntry(&mut row);
+    }
+    row.InterfaceLuid = luid;
+    row.Address = socket_address;
+    row.OnLinkPrefixLength = address.prefix_len();
+    row.PrefixOrigin = IpPrefixOriginManual;
+    row.SuffixOrigin = IpSuffixOriginManual;
+    row.ValidLifetime = u32::MAX;
+    row.PreferredLifetime = u32::MAX;
+    row.SkipAsSource = BOOLEAN(0);
+    row.DadState = IpDadStatePreferred;
+
+    unsafe { CreateUnicastIpAddressEntry(&row).map_err(io::Error::other) }
+}
+
+fn socket_address(ip: IpAddr) -> SOCKADDR_INET {
+    let mut socket_address = SOCKADDR_INET::default();
+    match ip {
+        IpAddr::V4(ip) => {
+            socket_address.Ipv4.sin_family = AF_INET;
+            socket_address.Ipv4.sin_addr.S_un.S_addr = u32::from_ne_bytes(ip.octets());
+        }
+        IpAddr::V6(ip) => {
+            socket_address.Ipv6.sin6_family = AF_INET6;
+            socket_address.Ipv6.sin6_addr.u.Byte = ip.octets();
+        }
+    }
+
+    socket_address
 }

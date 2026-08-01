@@ -1,122 +1,122 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use crate::error::{Error, Result};
 
-pub trait IntoIpv4Addr {
-    fn into_ipv4(&self) -> Result<Ipv4Addr>;
+/// An IP address assigned to a network interface and its on-link prefix length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NetworkAddress {
+    ip: IpAddr,
+    prefix_len: u8,
 }
 
-impl IntoIpv4Addr for u32 {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
-        Ok(Ipv4Addr::from(*self))
+impl NetworkAddress {
+    /// Creates an interface address after validating the prefix for its address family.
+    pub fn new(ip: IpAddr, prefix_len: u8) -> Result<Self> {
+        let max_prefix_len = if ip.is_ipv4() { 32 } else { 128 };
+        if prefix_len > max_prefix_len {
+            return Err(Error::InvalidAddress);
+        }
+
+        Ok(Self { ip, prefix_len })
+    }
+
+    /// Returns the IP address.
+    pub fn ip(self) -> IpAddr {
+        self.ip
+    }
+
+    /// Returns the CIDR prefix length.
+    pub fn prefix_len(self) -> u8 {
+        self.prefix_len
     }
 }
 
-impl IntoIpv4Addr for i32 {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
-        Ok(Ipv4Addr::from(*self as u32))
+/// Converts common address representations into [`IpAddr`].
+pub trait IntoIpAddr {
+    /// Performs the conversion.
+    fn into_ip_addr(self) -> Result<IpAddr>;
+}
+
+impl IntoIpAddr for u32 {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok(Ipv4Addr::from(self).into())
     }
 }
 
-impl IntoIpv4Addr for (u8, u8, u8, u8) {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
-        Ok(Ipv4Addr::new(self.0, self.1, self.2, self.3))
+impl IntoIpAddr for i32 {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok(Ipv4Addr::from(self as u32).into())
     }
 }
 
-impl IntoIpv4Addr for str {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
+impl IntoIpAddr for (u8, u8, u8, u8) {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok(Ipv4Addr::new(self.0, self.1, self.2, self.3).into())
+    }
+}
+
+impl IntoIpAddr for &str {
+    fn into_ip_addr(self) -> Result<IpAddr> {
         self.parse().map_err(|_| Error::InvalidAddress)
     }
 }
 
-impl IntoIpv4Addr for &str {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
-        (*self).into_ipv4()
+impl IntoIpAddr for String {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        self.as_str().into_ip_addr()
     }
 }
 
-impl IntoIpv4Addr for String {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
-        self.as_str().into_ipv4()
+impl IntoIpAddr for &String {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        self.as_str().into_ip_addr()
     }
 }
 
-impl IntoIpv4Addr for &String {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
-        (**self).into_ipv4()
+impl IntoIpAddr for Ipv4Addr {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok(self.into())
     }
 }
 
-impl IntoIpv4Addr for Ipv4Addr {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
+impl IntoIpAddr for &Ipv4Addr {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok((*self).into())
+    }
+}
+
+impl IntoIpAddr for Ipv6Addr {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok(self.into())
+    }
+}
+
+impl IntoIpAddr for &Ipv6Addr {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok((*self).into())
+    }
+}
+
+impl IntoIpAddr for IpAddr {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok(self)
+    }
+}
+
+impl IntoIpAddr for &IpAddr {
+    fn into_ip_addr(self) -> Result<IpAddr> {
         Ok(*self)
     }
 }
 
-impl IntoIpv4Addr for &Ipv4Addr {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
-        Ok(**self)
+impl IntoIpAddr for SocketAddr {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok(self.ip())
     }
 }
 
-impl IntoIpv4Addr for IpAddr {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
-        match self {
-            IpAddr::V4(addr) => Ok(*addr),
-            _ => Err(Error::InvalidAddress),
-        }
-    }
-}
-
-impl IntoIpv4Addr for &IpAddr {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
-        (*self).into_ipv4()
-    }
-}
-
-impl IntoIpv4Addr for SocketAddrV4 {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
-        self.ip().into_ipv4()
-    }
-}
-
-impl IntoIpv4Addr for &SocketAddrV4 {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
-        (*self).into_ipv4()
-    }
-}
-
-impl IntoIpv4Addr for SocketAddr {
-    fn into_ipv4(&self) -> Result<Ipv4Addr> {
-        match self {
-            SocketAddr::V4(addr) => addr.into_ipv4(),
-            _ => Err(Error::InvalidAddress),
-        }
-    }
-}
-
-#[cfg(unix)]
-pub trait Ipv4AddrExt {
-    fn to_sockaddr(&self) -> libc::sockaddr;
-    fn from_sockaddr(sock: libc::sockaddr) -> Self;
-}
-
-#[cfg(unix)]
-impl Ipv4AddrExt for Ipv4Addr {
-    fn to_sockaddr(&self) -> libc::sockaddr {
-        let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-        addr.sin_family = libc::AF_INET as _;
-        // addr.sin_port = 0;
-        addr.sin_addr = libc::in_addr {
-            s_addr: u32::from_ne_bytes(self.octets()),
-        };
-        unsafe { std::mem::transmute(addr) }
-    }
-
-    fn from_sockaddr(addr: libc::sockaddr) -> Self {
-        let addr: libc::sockaddr_in = unsafe { std::mem::transmute(addr) };
-        // network byte order to host byte order
-        addr.sin_addr.s_addr.to_ne_bytes().into()
+impl IntoIpAddr for &SocketAddr {
+    fn into_ip_addr(self) -> Result<IpAddr> {
+        Ok(self.ip())
     }
 }

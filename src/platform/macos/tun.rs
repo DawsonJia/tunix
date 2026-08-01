@@ -1,11 +1,10 @@
 use std::ffi::CStr;
 use std::io::{Read, Write};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::fd::{AsRawFd, RawFd};
 use std::{io, mem};
 
 use crate::Configuration;
-use crate::address::Ipv4AddrExt;
 use crate::configuration::Layer;
 use crate::error::{Error, Result};
 use crate::interface::Interface;
@@ -47,6 +46,7 @@ pub struct Tun {
     pub(crate) name: String,
     pub(crate) queue: Queue,
     pub(crate) ctl: Fd,
+    pub(crate) ctl_v6: Fd,
 }
 
 fn utun_unit(name: &str) -> Result<u32> {
@@ -131,6 +131,7 @@ impl Tun {
 
         // new a control fd
         let ctl = Fd::socket(libc::AF_INET, libc::SOCK_DGRAM, 0)?;
+        let ctl_v6 = Fd::socket(libc::AF_INET6, libc::SOCK_DGRAM, 0)?;
 
         let mut tun = Self {
             name: unsafe {
@@ -140,19 +141,10 @@ impl Tun {
             },
             queue: Queue { tun: tun_fd },
             ctl,
+            ctl_v6,
         };
 
         tun.configure(config)?;
-
-        // macOS needs SIOCAIFADDR for netmask changes to stick when an address is configured.
-        if let Some(address) = config.address {
-            tun.set_alias(
-                address,
-                // Without an explicit peer, keep alias setup local instead of inventing one.
-                config.destination.unwrap_or(address),
-                config.netmask.unwrap_or(Ipv4Addr::new(255, 255, 255, 0)),
-            )?;
-        }
 
         Ok(tun)
     }
@@ -169,11 +161,26 @@ impl Tun {
         let mut ifar: ifaliasreq = unsafe { mem::zeroed() };
         write_if_name(&self.name, &mut ifar.ifra_name)?;
 
-        ifar.ifra_addr = addr.to_sockaddr();
-        ifar.ifra_broadaddr = broadaddr.to_sockaddr();
-        ifar.ifra_mask = mask.to_sockaddr();
+        ifar.ifra_addr = ipv4_sockaddr(addr);
+        ifar.ifra_broadaddr = ipv4_sockaddr(broadaddr);
+        ifar.ifra_mask = ipv4_sockaddr(mask);
 
         unsafe { siocaifaddr(self.ctl.as_raw_fd(), &ifar) }?;
+
+        Ok(())
+    }
+
+    fn set_alias_v6(&mut self, addr: Ipv6Addr, prefix_len: u8) -> Result<()> {
+        let mut ifar: in6_aliasreq = unsafe { mem::zeroed() };
+        write_if_name(&self.name, &mut ifar.ifra_name)?;
+
+        ifar.ifra_addr = ipv6_sockaddr(addr);
+        ifar.ifra_dstaddr = ipv6_sockaddr(Ipv6Addr::UNSPECIFIED);
+        ifar.ifra_prefixmask = ipv6_sockaddr(ipv6_netmask(prefix_len));
+        ifar.ifra_lifetime.ia6t_vltime = u32::MAX;
+        ifar.ifra_lifetime.ia6t_pltime = u32::MAX;
+
+        unsafe { siocaifaddr_in6(self.ctl_v6.as_raw_fd(), &ifar) }?;
 
         Ok(())
     }
@@ -238,69 +245,11 @@ impl Interface for Tun {
         Ok(unsafe { ifr.ifr_ifru.ifru_flags })
     }
 
-    fn address(&self) -> Result<Ipv4Addr> {
-        let mut ifr: libc::ifreq = self.ifreq();
-        unsafe { siocgifaddr(self.ctl.as_raw_fd(), &mut ifr) }?;
-
-        Ok(Ipv4Addr::from_sockaddr(unsafe { ifr.ifr_ifru.ifru_addr }))
-    }
-    fn set_address(&mut self, addr: Ipv4Addr) -> Result<()> {
-        let mut ifr = self.ifreq();
-        ifr.ifr_ifru.ifru_addr = addr.to_sockaddr();
-
-        unsafe { siocsifaddr(self.ctl.as_raw_fd(), &ifr) }?;
-
-        Ok(())
-    }
-
-    fn destination(&self) -> Result<Ipv4Addr> {
-        let mut ifr: libc::ifreq = self.ifreq();
-        unsafe { siocgifdstaddr(self.ctl.as_raw_fd(), &mut ifr) }?;
-
-        Ok(Ipv4Addr::from_sockaddr(
-            // access to union field is unsafe
-            unsafe { ifr.ifr_ifru.ifru_dstaddr },
-        ))
-    }
-    fn set_destination(&mut self, addr: Ipv4Addr) -> Result<()> {
-        let mut ifr = self.ifreq();
-        ifr.ifr_ifru.ifru_dstaddr = addr.to_sockaddr();
-
-        unsafe { siocsifdstaddr(self.ctl.as_raw_fd(), &ifr) }?;
-
-        Ok(())
-    }
-
-    fn broadcast(&self) -> Result<Ipv4Addr> {
-        let mut ifr: libc::ifreq = self.ifreq();
-        unsafe { siocgifbrdaddr(self.ctl.as_raw_fd(), &mut ifr) }?;
-
-        Ok(Ipv4Addr::from_sockaddr(unsafe {
-            ifr.ifr_ifru.ifru_broadaddr
-        }))
-    }
-    fn set_broadcast(&mut self, addr: Ipv4Addr) -> Result<()> {
-        let mut ifr = self.ifreq();
-        ifr.ifr_ifru.ifru_broadaddr = addr.to_sockaddr();
-
-        unsafe { siocsifbrdaddr(self.ctl.as_raw_fd(), &ifr) }?;
-
-        Ok(())
-    }
-
-    fn netmask(&self) -> Result<Ipv4Addr> {
-        let mut ifr = self.ifreq();
-        unsafe { siocgifnetmask(self.ctl.as_raw_fd(), &mut ifr) }?;
-
-        Ok(Ipv4Addr::from_sockaddr(unsafe { ifr.ifr_ifru.ifru_addr }))
-    }
-    fn set_netmask(&mut self, addr: Ipv4Addr) -> Result<()> {
-        let mut ifr = self.ifreq();
-        ifr.ifr_ifru.ifru_addr = addr.to_sockaddr();
-
-        unsafe { siocsifnetmask(self.ctl.as_raw_fd(), &ifr) }?;
-
-        Ok(())
+    fn add_address(&mut self, address: crate::NetworkAddress) -> Result<()> {
+        match address.ip() {
+            IpAddr::V4(addr) => self.set_alias(addr, addr, ipv4_netmask(address.prefix_len())),
+            IpAddr::V6(addr) => self.set_alias_v6(addr, address.prefix_len()),
+        }
     }
 
     fn mtu(&self) -> Result<i32> {
@@ -322,6 +271,44 @@ impl Interface for Tun {
     fn queue(&mut self) -> &mut Self::Queue {
         &mut self.queue
     }
+}
+
+fn ipv4_sockaddr(addr: Ipv4Addr) -> libc::sockaddr {
+    let mut socket_addr: libc::sockaddr_in = unsafe { mem::zeroed() };
+    socket_addr.sin_len = mem::size_of::<libc::sockaddr_in>() as u8;
+    socket_addr.sin_family = libc::AF_INET as _;
+    socket_addr.sin_addr = libc::in_addr {
+        s_addr: u32::from_ne_bytes(addr.octets()),
+    };
+
+    unsafe { mem::transmute(socket_addr) }
+}
+
+fn ipv6_sockaddr(addr: Ipv6Addr) -> libc::sockaddr_in6 {
+    let mut socket_addr: libc::sockaddr_in6 = unsafe { mem::zeroed() };
+    socket_addr.sin6_len = mem::size_of::<libc::sockaddr_in6>() as u8;
+    socket_addr.sin6_family = libc::AF_INET6 as _;
+    socket_addr.sin6_addr = libc::in6_addr {
+        s6_addr: addr.octets(),
+    };
+
+    socket_addr
+}
+
+fn ipv4_netmask(prefix_len: u8) -> Ipv4Addr {
+    Ipv4Addr::from(
+        u32::MAX
+            .checked_shl(32 - u32::from(prefix_len))
+            .unwrap_or(0),
+    )
+}
+
+fn ipv6_netmask(prefix_len: u8) -> Ipv6Addr {
+    Ipv6Addr::from(
+        u128::MAX
+            .checked_shl(128 - u32::from(prefix_len))
+            .unwrap_or(0),
+    )
 }
 
 impl Read for Tun {
@@ -349,16 +336,5 @@ impl Write for Tun {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::utun_unit;
-    use crate::Error;
-
-    #[test]
-    fn utun_unit_is_checked_and_one_based() {
-        assert_eq!(utun_unit("utun0").unwrap(), 1);
-        assert!(matches!(
-            utun_unit("utun4294967295"),
-            Err(Error::InvalidName)
-        ));
-    }
-}
+#[path = "../../../tests/unit/src/platform/macos/tun.rs"]
+mod tests;

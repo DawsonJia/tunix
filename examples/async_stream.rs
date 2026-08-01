@@ -9,8 +9,7 @@ use tunix::Configuration;
 #[tokio::main]
 async fn main() {
     let dev = Configuration::default()
-        .address("192.168.108.1")
-        .netmask("255.255.255.0")
+        .address("192.168.108.1", 24)
         .up()
         .build_async()
         .unwrap();
