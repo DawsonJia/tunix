@@ -16,6 +16,10 @@ use super::codec::TunPacketCodec;
 
 const DEFAULT_MTU: usize = 1500;
 
+/// The longest packet that Wintun hands over, whatever the MTU of IPv4 or of IPv6 is.
+#[cfg(target_os = "windows")]
+const MAX_PACKET_SIZE: usize = 0xFFFF;
+
 #[cfg(unix)]
 pub struct AsyncTun {
     inner: AsyncFd<Tun>,
@@ -43,6 +47,10 @@ impl AsyncTun {
     pub fn into_framed(self) -> Framed<Self, TunPacketCodec> {
         let pi = self.get_ref().has_packet_information();
         let layer = self.get_ref().layer();
+        // FIXME: the read buffer of the codec is sized by this MTU. On Windows it is that of
+        // IPv4, so a longer packet of an IPv6 with a higher MTU of its own comes out of
+        // `poll_read` in pieces, each decoded as a packet. So does one under an MTU that was
+        // raised after this, which a Unix TUN cuts short instead.
         let mtu = self
             .get_ref()
             .mtu()
@@ -81,16 +89,10 @@ impl AsyncTun {
     fn new_inner(tun: Tun) -> Result<AsyncTun> {
         let mut reader = tun.reader_queue();
         let (read_tx, read_rx) = mpsc::channel(READ_QUEUE_CAPACITY);
-        let mtu = tun
-            .mtu()
-            .ok()
-            .and_then(|mtu| usize::try_from(mtu).ok())
-            .filter(|mtu| *mtu > 0)
-            .unwrap_or(DEFAULT_MTU);
         std::thread::Builder::new()
             .name("tunix-wintun-reader".into())
             .spawn(move || {
-                let mut buf = vec![0u8; mtu];
+                let mut buf = vec![0u8; MAX_PACKET_SIZE];
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => return,
