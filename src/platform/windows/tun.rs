@@ -132,11 +132,16 @@ impl Tun {
             Err(_) => Adapter::create(&wintun, name, TUNNEL_TYPE, config.platform.device_guid)?,
         };
 
+        // Not `Adapter::get_adapter_index`: that is the index of IPv4 alone, which is 0 on an
+        // adapter without IPv4.
+        let index = routex::if_friendly_name_to_index(&adapter.get_name()?)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+
         let mut tun = Self {
             queue: Queue {
                 session: Arc::new(adapter.start_session(config.platform.ring_capacity)?),
             },
-            index: adapter.get_adapter_index()?,
+            index,
         };
         tun.configure(config)?;
 
