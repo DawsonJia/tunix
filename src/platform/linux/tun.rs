@@ -5,6 +5,7 @@ use crate::{
     platform::posix::fd::Fd,
 };
 use libc::{c_int, c_short};
+use routex::Handle;
 use std::{
     ffi::CStr,
     io::{self, Read, Write},
@@ -52,8 +53,15 @@ impl AsRawFd for Queue {
 }
 
 pub struct Tun {
+    // TODO: read the name off the queue with TUNGETIFF instead of keeping it: this copy is
+    // stale once something else renames the interface, and `set_name` then fails. Not
+    // `if_indextoname`, which answers for the namespace of the calling thread.
     name: Arc<Mutex<String>>,
     index: u32,
+    handle: Handle,
+    // The socket that renames the interface. As `handle`, it is of the network namespace
+    // the interface was made in.
+    ctl: Arc<Fd>,
     queue: Queue,
     layer: Layer,
 }
@@ -117,16 +125,21 @@ impl Tun {
         let index = routex::if_nametoindex(&name)
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         let name = Arc::new(Mutex::new(name));
+        let ctl = Arc::new(Fd::socket(libc::AF_INET, libc::SOCK_DGRAM, 0)?);
 
-        let mut tuns: Vec<Self> = queues
+        let mut tuns = queues
             .into_iter()
-            .map(|queue| Self {
-                name: name.clone(),
-                index,
-                queue,
-                layer: config.layer,
+            .map(|queue| {
+                Ok(Self {
+                    name: name.clone(),
+                    index,
+                    handle: Handle::new()?,
+                    ctl: ctl.clone(),
+                    queue,
+                    layer: config.layer,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<Self>>>()?;
 
         tuns[0].configure(config)?;
 
@@ -163,8 +176,7 @@ impl Interface for Tun {
         write_if_name(&name, &mut ifr.ifr_name)?;
         unsafe { write_if_name(new_name, &mut ifr.ifr_ifru.ifru_newname)? };
 
-        let socket = Fd::socket(libc::AF_INET, libc::SOCK_DGRAM, 0)?;
-        unsafe { siocsifname(socket.as_raw_fd(), &ifr) }?;
+        unsafe { siocsifname(self.ctl.as_raw_fd(), &ifr) }?;
 
         *name = new_name.into();
 
@@ -173,6 +185,10 @@ impl Interface for Tun {
 
     fn index(&self) -> u32 {
         self.index
+    }
+
+    fn handle(&mut self) -> &mut Handle {
+        &mut self.handle
     }
 
     fn queue(&mut self) -> &mut Self::Queue {

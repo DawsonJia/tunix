@@ -44,7 +44,7 @@ impl AsyncTun {
         tuns.into_iter().map(AsyncTun::new).collect()
     }
 
-    pub fn into_framed(self) -> Framed<Self, TunPacketCodec> {
+    pub fn into_framed(mut self) -> Framed<Self, TunPacketCodec> {
         let pi = self.get_ref().has_packet_information();
         let layer = self.get_ref().layer();
         // FIXME: the read buffer of the codec is sized by this MTU. On Windows it is that of
@@ -52,7 +52,7 @@ impl AsyncTun {
         // `poll_read` in pieces, each decoded as a packet. So does one under an MTU that was
         // raised after this, which a Unix TUN cuts short instead.
         let mtu = self
-            .get_ref()
+            .get_mut()
             .mtu()
             .ok()
             .and_then(|mtu| usize::try_from(mtu).ok())

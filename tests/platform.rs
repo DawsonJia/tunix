@@ -2,6 +2,8 @@ use tunix::{Configuration, interface::Interface};
 
 #[cfg(target_os = "macos")]
 use std::{ffi::CStr, net::Ipv4Addr, ptr};
+#[cfg(target_os = "linux")]
+use std::{fs::File, os::fd::AsRawFd};
 #[cfg(unix)]
 use std::{io, process::Command};
 #[cfg(unix)]
@@ -16,6 +18,19 @@ fn assert_io_error(result: tunix::Result<()>, kind: io::ErrorKind) {
         matches!(&result, Err(Error::Io(error)) if error.kind() == kind),
         "{result:?} is not {kind:?}"
     );
+}
+
+/// The network namespace of the calling thread.
+#[cfg(target_os = "linux")]
+fn network_namespace() -> File {
+    File::open("/proc/thread-self/ns/net").unwrap()
+}
+
+/// Moves the calling thread, and the `ip` it runs from then on, into `namespace`.
+#[cfg(target_os = "linux")]
+fn enter(namespace: &File) {
+    let result = unsafe { libc::setns(namespace.as_raw_fd(), libc::CLONE_NEWNET) };
+    assert_eq!(result, 0, "{}", io::Error::last_os_error());
 }
 
 /// Moves the calling thread into a network namespace of its own, with a loopback and nothing
@@ -226,6 +241,46 @@ fn create_multi_queue_for_linux() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+#[ignore = "requires root privileges"]
+fn configures_the_interface_of_the_namespace_it_was_made_in() {
+    // Two namespaces with a `tun0` of the same index in each. The calling thread is in that
+    // of the decoy for every request to the other one.
+    enter_new_network_namespace();
+    let mut decoy = Configuration::default().mtu(1400).build().unwrap();
+    let here = network_namespace();
+
+    enter_new_network_namespace();
+    let dev = Configuration::default().mtu(1400).build();
+    let there = network_namespace();
+    enter(&here);
+    let mut dev = dev.unwrap();
+
+    assert_eq!("tun0", decoy.name().unwrap());
+    assert_eq!("tun0", dev.name().unwrap());
+    assert_eq!(decoy.index(), dev.index());
+
+    dev.set_mtu(1300).unwrap();
+    let address = "10.66.0.1".parse().unwrap();
+    dev.add_address(tunix::NetworkAddress::new(address, 24).unwrap())
+        .unwrap();
+    dev.set_name("tun9").unwrap();
+    dev.enable(true).unwrap();
+    assert_eq!(1300, dev.mtu().unwrap());
+    assert_eq!(1400, decoy.mtu().unwrap());
+
+    // None of it reached the decoy.
+    let link = ip_link("tun0");
+    assert!(link.contains("mtu 1400 ") && !is_up(&link), "{link}");
+    assert_eq!("", ip_addresses("tun0"));
+
+    enter(&there);
+    let link = ip_link("tun9");
+    assert!(link.contains("mtu 1300 ") && is_up(&link), "{link}");
+    assert!(ip_addresses("tun9").contains("inet 10.66.0.1/24"));
+}
+
+#[test]
 #[cfg(target_os = "macos")]
 #[ignore = "requires root privileges"]
 fn create_for_macos() {
@@ -330,7 +385,7 @@ fn build_fails_on_the_address_macos_refuses() {
 fn create_for_windows() {
     let mut config = Configuration::default();
 
-    let dev = config
+    let mut dev = config
         .name("tunix-test")
         .address("192.168.50.1", 24)
         .address("fd00::1", 64)

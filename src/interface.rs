@@ -5,7 +5,8 @@ use crate::configuration::Configuration;
 use crate::error::*;
 
 /// A network interface: its name, its packet queue, and the addresses, MTU and state that
-/// [`routex`] sets on it by its [`index`](Interface::index).
+/// [`routex`] sets on it by its [`index`](Interface::index), through its
+/// [`handle`](Interface::handle).
 ///
 /// What each platform makes of an address, an MTU and a link is in the
 /// [Semantics of `routex`](https://docs.rs/routex/0.5/routex/#semantics). A request that the
@@ -36,7 +37,16 @@ pub trait Interface /*: Read + Write*/ {
 
     /// The index of the interface. `routex` takes an interface by its index, for its routes
     /// as well as for its addresses and link. A renamed interface keeps its index.
+    ///
+    /// On Linux an index is of a network namespace: this one is of the namespace the interface
+    /// was made in, as [`handle`](Interface::handle) is.
     fn index(&self) -> u32;
+
+    /// The `routex` handle that sets the addresses, the MTU and the state of the interface.
+    ///
+    /// It was made with the interface. On Linux that makes it a handle of the network
+    /// namespace the interface was made in, whichever one the calling thread is in by now.
+    fn handle(&mut self) -> &mut Handle;
 
     /// Brings the interface up, or down, as [`routex::Handle::set_link_up`] does.
     ///
@@ -44,7 +54,9 @@ pub trait Interface /*: Read + Write*/ {
     /// its `Tun`.
     #[cfg(not(target_os = "windows"))]
     fn enable(&mut self, value: bool) -> Result<()> {
-        Ok(Handle::new()?.set_link_up(self.index(), value)?)
+        let index = self.index();
+
+        Ok(self.handle().set_link_up(index, value)?)
     }
 
     /// Makes `address` an address of the interface, whether or not it is one already, as
@@ -63,20 +75,26 @@ pub trait Interface /*: Read + Write*/ {
     ///   host route to yet, or it fails with `AlreadyExists`.
     /// - Windows: an ip is there once, and takes the new prefix. There are no peers.
     fn add_address(&mut self, address: NetworkAddress) -> Result<()> {
-        Ok(Handle::new()?.replace_address(&address.on(self.index()))?)
+        let address = address.on(self.index());
+
+        Ok(self.handle().replace_address(&address)?)
     }
 
     /// The MTU of the interface, as [`routex::Handle::get_link_mtu`] reads it: on Windows that
     /// of IPv4, or of IPv6 on an adapter without IPv4.
-    fn mtu(&self) -> Result<u32> {
-        Ok(Handle::new()?.get_link_mtu(self.index())?)
+    fn mtu(&mut self) -> Result<u32> {
+        let index = self.index();
+
+        Ok(self.handle().get_link_mtu(index)?)
     }
 
     /// Sets the MTU of the interface, as [`routex::Handle::set_link_mtu`] does. An MTU the
     /// interface does not take is the platform's to refuse. Windows has one for each of IPv4
     /// and IPv6 and sets both, or neither for an MTU under the 1280 that IPv6 takes.
     fn set_mtu(&mut self, mtu: u32) -> Result<()> {
-        Ok(Handle::new()?.set_link_mtu(self.index(), mtu)?)
+        let index = self.index();
+
+        Ok(self.handle().set_link_mtu(index, mtu)?)
     }
 
     fn queue(&mut self) -> &mut Self::Queue;

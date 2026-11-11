@@ -26,6 +26,10 @@ impl Interface for RecordingInterface {
         0
     }
 
+    fn handle(&mut self) -> &mut routex::Handle {
+        unreachable!("every request that goes through the handle is recorded instead")
+    }
+
     #[cfg(not(target_os = "windows"))]
     fn enable(&mut self, value: bool) -> Result<()> {
         self.enabled = value;
@@ -37,7 +41,7 @@ impl Interface for RecordingInterface {
         Ok(())
     }
 
-    fn mtu(&self) -> Result<u32> {
+    fn mtu(&mut self) -> Result<u32> {
         Ok(self.mtu)
     }
 

@@ -9,6 +9,7 @@ use crate::{
     error::{Error, Result},
     interface::Interface,
 };
+use routex::Handle;
 use wintun::{Adapter, MAX_RING_CAPACITY, Session, load_from_path};
 
 const TUNNEL_TYPE: &str = "tunix";
@@ -111,6 +112,7 @@ impl Write for Queue {
 pub struct Tun {
     queue: Queue,
     index: u32,
+    handle: Handle,
 }
 
 impl Tun {
@@ -142,6 +144,7 @@ impl Tun {
                 session: Arc::new(adapter.start_session(config.platform.ring_capacity)?),
             },
             index,
+            handle: Handle::new()?,
         };
         tun.configure(config)?;
 
@@ -192,6 +195,10 @@ impl Interface for Tun {
 
     fn index(&self) -> u32 {
         self.index
+    }
+
+    fn handle(&mut self) -> &mut Handle {
+        &mut self.handle
     }
 
     fn queue(&mut self) -> &mut Self::Queue {

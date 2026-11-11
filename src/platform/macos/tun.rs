@@ -10,6 +10,7 @@ use crate::interface::Interface;
 use crate::platform::posix::fd::Fd;
 use crate::platform::posix::sys::cvt;
 use libc::{c_char, c_uchar, c_uint, socklen_t};
+use routex::Handle;
 
 const UTUN_CONTROL_NAME: &str = "com.apple.net.utun_control";
 
@@ -44,6 +45,7 @@ impl AsRawFd for Queue {
 pub struct Tun {
     pub(crate) name: String,
     index: u32,
+    handle: Handle,
     pub(crate) queue: Queue,
 }
 
@@ -138,6 +140,7 @@ impl Tun {
         let mut tun = Self {
             name,
             index,
+            handle: Handle::new()?,
             queue: Queue { tun: tun_fd },
         };
 
@@ -182,6 +185,10 @@ impl Interface for Tun {
 
     fn index(&self) -> u32 {
         self.index
+    }
+
+    fn handle(&mut self) -> &mut Handle {
+        &mut self.handle
     }
 
     fn queue(&mut self) -> &mut Self::Queue {
