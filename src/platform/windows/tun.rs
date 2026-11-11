@@ -9,9 +9,8 @@ use crate::{
     error::{Error, Result},
     interface::Interface,
 };
+use routex::Handle;
 use wintun::{Adapter, MAX_RING_CAPACITY, Session, load_from_path};
-
-use super::sys;
 
 const TUNNEL_TYPE: &str = "tunix";
 
@@ -112,7 +111,8 @@ impl Write for Queue {
 
 pub struct Tun {
     queue: Queue,
-    mtu: i32,
+    index: u32,
+    handle: Handle,
 }
 
 impl Tun {
@@ -126,8 +126,6 @@ impl Tun {
             return Err(Error::InvalidQueuesNumber);
         }
 
-        sys::validate_addresses(&config.addresses)?;
-
         let wintun = unsafe { load_from_path(&config.platform.wintun_file)? };
         let name = config.name.as_deref().unwrap_or("wintun");
         let adapter = match Adapter::open(&wintun, name) {
@@ -136,14 +134,17 @@ impl Tun {
             Err(_) => Adapter::create(&wintun, name, TUNNEL_TYPE, config.platform.device_guid)?,
         };
 
+        // Not `Adapter::get_adapter_index`: that is the index of IPv4 alone, which is 0 on an
+        // adapter without IPv4.
+        let index = routex::if_friendly_name_to_index(&adapter.get_name()?)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+
         let mut tun = Self {
             queue: Queue {
                 session: Arc::new(adapter.start_session(config.platform.ring_capacity)?),
             },
-            mtu: adapter
-                .get_mtu()?
-                .try_into()
-                .map_err(|_| Error::InvalidConfig)?,
+            index,
+            handle: Handle::new()?,
         };
         tun.configure(config)?;
 
@@ -171,6 +172,7 @@ impl Tun {
         Ok(())
     }
 
+    // FIXME: dead code without the `async` feature, which is its only caller.
     pub(crate) fn reader_queue(&self) -> Queue {
         self.queue.clone()
     }
@@ -191,37 +193,12 @@ impl Interface for Tun {
         Ok(self.adapter().set_name(name)?)
     }
 
-    fn enable(&mut self, _value: bool) -> Result<()> {
-        // Wintun adapter availability is bound to the session lifetime.
-        Ok(())
+    fn index(&self) -> u32 {
+        self.index
     }
 
-    fn flags(&self, _flags: Option<i16>) -> Result<i16> {
-        Ok(0)
-    }
-
-    fn add_address(&mut self, address: crate::NetworkAddress) -> Result<()> {
-        sys::add_address(self.adapter().get_luid(), address)?;
-        Ok(())
-    }
-
-    fn add_addresses(&mut self, addresses: &[crate::NetworkAddress]) -> Result<()> {
-        sys::validate_addresses(addresses)?;
-        for &address in addresses {
-            self.add_address(address)?;
-        }
-
-        Ok(())
-    }
-
-    fn mtu(&self) -> Result<i32> {
-        Ok(self.mtu)
-    }
-
-    fn set_mtu(&mut self, mtu: i32) -> Result<()> {
-        sys::set_mtu(self.adapter().get_luid(), mtu)?;
-        self.mtu = mtu;
-        Ok(())
+    fn handle(&mut self) -> &mut Handle {
+        &mut self.handle
     }
 
     fn queue(&mut self) -> &mut Self::Queue {
@@ -244,7 +221,3 @@ impl Write for Tun {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "../../../tests/unit/src/platform/windows/tun.rs"]
-mod tests;

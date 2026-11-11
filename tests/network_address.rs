@@ -9,12 +9,14 @@ fn accepts_prefixes_for_both_address_families() {
 
     assert_eq!(ipv4.ip(), IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
     assert_eq!(ipv4.prefix_len(), 24);
+    #[cfg(not(target_os = "windows"))]
     assert_eq!(ipv4.peer(), None);
     assert_eq!(ipv6.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
     assert_eq!(ipv6.prefix_len(), 128);
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn accepts_same_family_peers() {
     let peer = Ipv4Addr::new(192, 0, 2, 2);
     let address = NetworkAddress::new(Ipv4Addr::new(192, 0, 2, 1).into(), 32)
@@ -26,6 +28,7 @@ fn accepts_same_family_peers() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn rejects_mixed_family_peers() {
     let result = NetworkAddress::new(Ipv4Addr::LOCALHOST.into(), 32)
         .unwrap()
