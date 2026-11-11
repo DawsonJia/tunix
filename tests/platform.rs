@@ -1,7 +1,5 @@
 use tunix::{Configuration, interface::Interface};
 
-#[cfg(target_os = "linux")]
-use std::fs;
 #[cfg(target_os = "macos")]
 use std::{ffi::CStr, net::Ipv4Addr, ptr};
 #[cfg(unix)]
@@ -20,33 +18,41 @@ fn assert_io_error(result: tunix::Result<()>, kind: io::ErrorKind) {
     );
 }
 
-/// The addresses of the interface `name`, one a line, as `ip address` shows them.
+/// Moves the calling thread into a network namespace of its own, with a loopback and nothing
+/// else in it: a test neither meets an interface of the host there nor leaves it one.
 #[cfg(target_os = "linux")]
-fn ip_addresses(name: &str) -> String {
-    let output = Command::new("ip")
-        .args(["-o", "address", "show", "dev", name])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
+fn enter_new_network_namespace() {
+    let result = unsafe { libc::unshare(libc::CLONE_NEWNET) };
+    assert_eq!(result, 0, "{}", io::Error::last_os_error());
+}
+
+/// What `ip` prints for `args`, in the network namespace of the calling thread.
+#[cfg(target_os = "linux")]
+fn ip(args: &[&str]) -> String {
+    let output = Command::new("ip").args(args).output().unwrap();
+    assert!(output.status.success(), "ip {args:?}: {output:?}");
 
     String::from_utf8(output.stdout).unwrap()
 }
 
-/// An attribute of the interface `name`, as sysfs has it.
+/// The interface `name`, as a line of `ip link`.
 #[cfg(target_os = "linux")]
-fn sysfs(name: &str, attribute: &str) -> String {
-    fs::read_to_string(format!("/sys/class/net/{name}/{attribute}"))
-        .unwrap()
-        .trim()
-        .to_owned()
+fn ip_link(name: &str) -> String {
+    ip(&["-o", "link", "show", "dev", name])
 }
 
+/// The addresses of the interface `name`, one a line, as `ip address` shows them.
 #[cfg(target_os = "linux")]
-fn is_up(name: &str) -> bool {
-    let flags = sysfs(name, "flags");
-    let flags = u32::from_str_radix(flags.trim_start_matches("0x"), 16).unwrap();
+fn ip_addresses(name: &str) -> String {
+    ip(&["-o", "address", "show", "dev", name])
+}
 
-    flags & libc::IFF_UP as u32 != 0
+/// Whether the interface of a line of `ip link` is up.
+#[cfg(target_os = "linux")]
+fn is_up(link: &str) -> bool {
+    let flags = link.split(['<', '>']).nth(1).unwrap();
+
+    flags.split(',').any(|flag| flag == "UP")
 }
 
 #[cfg(target_os = "macos")]
@@ -135,8 +141,9 @@ fn route_interface(address: &str) -> Option<String> {
 
 #[test]
 #[cfg(target_os = "linux")]
-#[ignore = "requires /dev/net/tun and CAP_NET_ADMIN"]
+#[ignore = "requires root privileges"]
 fn create_for_linux() {
+    enter_new_network_namespace();
     let mut config = Configuration::default();
 
     let mut dev = config
@@ -161,18 +168,18 @@ fn create_for_linux() {
         assert!(addresses.contains(address), "no {address} in:\n{addresses}");
     }
     assert_eq!(1400, dev.mtu().unwrap());
-    assert_eq!("1400", sysfs("tun0", "mtu"));
-    assert!(is_up("tun0"));
+    assert!(ip_link("tun0").contains("mtu 1400 "));
+    assert!(is_up(&ip_link("tun0")));
 
     // An address that is there is no error, and one the kernel refuses is that of routex.
     let address = "10.64.0.1".parse().unwrap();
     dev.add_address(tunix::NetworkAddress::new(address, 10).unwrap())
         .unwrap();
     assert_io_error(dev.set_mtu(u32::MAX), io::ErrorKind::InvalidInput);
-    assert_eq!("1400", sysfs("tun0", "mtu"));
+    assert!(ip_link("tun0").contains("mtu 1400 "));
 
     dev.enable(false).unwrap();
-    assert!(!is_up("tun0"));
+    assert!(!is_up(&ip_link("tun0")));
 
     // The interface keeps its index under another name.
     dev.set_name("tun9").unwrap();
@@ -180,15 +187,16 @@ fn create_for_linux() {
     assert_eq!(routex::if_nametoindex("tun9"), Some(dev.index()));
     dev.set_mtu(1300).unwrap();
     assert_eq!(1300, dev.mtu().unwrap());
-    assert_eq!("1300", sysfs("tun9", "mtu"));
+    assert!(ip_link("tun9").contains("mtu 1300 "));
     dev.enable(true).unwrap();
-    assert!(is_up("tun9"));
+    assert!(is_up(&ip_link("tun9")));
 }
 
 #[test]
 #[cfg(target_os = "linux")]
-#[ignore = "requires /dev/net/tun and CAP_NET_ADMIN"]
+#[ignore = "requires root privileges"]
 fn create_multi_queue_for_linux() {
+    enter_new_network_namespace();
     let mut devs = Configuration::default()
         .name("tun1")
         .address("10.65.0.1", 24)
@@ -204,7 +212,7 @@ fn create_multi_queue_for_linux() {
     for address in ["inet 10.65.0.1/24", "inet6 fd00:1::1/64"] {
         assert!(addresses.contains(address), "no {address} in:\n{addresses}");
     }
-    assert!(is_up("tun1"));
+    assert!(is_up(&ip_link("tun1")));
 
     // The queues are of one interface: each configures it.
     let index = routex::if_nametoindex("tun1");
