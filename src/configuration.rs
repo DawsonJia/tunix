@@ -46,7 +46,9 @@ impl Configuration {
     /// Call this once for each address family to configure a dual-stack interface. The
     /// addresses are set in the order they were added, each as [`Interface::add_address`] sets
     /// it: one that the interface has already is no error. One that the platform refuses fails
-    /// the build with [`Error::Io`], and the interface goes with it.
+    /// the build with [`Error::Io`]. A build is no transaction: an interface that it made goes
+    /// with it, but one that was there before, a persistent TUN of Linux or an adapter of
+    /// Windows, keeps what the build set on it before it failed.
     ///
     /// - macOS has no prefix `/0`. A utun is point-to-point, where an IPv4 address without a
     ///   peer is the first IPv4 address of the interface or none: add at most one, before the
@@ -71,12 +73,16 @@ impl Configuration {
     }
 
     /// Adds an interface address with a point-to-point peer, set as those of
-    /// [`address`](Self::address) are. The address brings a route to the peer, not to its
-    /// prefix.
+    /// [`address`](Self::address) are.
+    ///
+    /// With a host prefix (`/32` or `/128`), which is the portable choice, the address brings
+    /// a route to the peer and to no other host. Linux routes a shorter prefix as well: that
+    /// of the peer for an IPv4 address, and for an IPv6 one its own, beside the route to the
+    /// peer.
     ///
     /// Not on Windows, which has no peers. macOS has no prefix `/0`, and takes the peer of an
     /// IPv6 address under prefix `/128` only, and only a peer that the routing table has no
-    /// host route to yet. A host prefix (`/32` or `/128`) is the portable choice.
+    /// host route to yet.
     ///
     /// ```
     /// let mut config = tunix::Configuration::default();

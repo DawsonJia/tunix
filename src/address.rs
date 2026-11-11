@@ -29,12 +29,16 @@ impl NetworkAddress {
         })
     }
 
-    /// Sets the address at the other end of a point-to-point link. The address then brings a
-    /// route to the peer, not to its prefix.
+    /// Sets the address at the other end of a point-to-point link.
+    ///
+    /// With a host prefix (`/32` or `/128`), which is the portable choice, the address then
+    /// brings a route to the peer and to no other host. Linux routes a shorter prefix as well:
+    /// that of the peer for an IPv4 address, and for an IPv6 one its own, beside the route to
+    /// the peer.
     ///
     /// The peer must use the same address family as the local address. What else a platform
     /// asks of a peer is checked when the address is applied: macOS takes the peer of an IPv6
-    /// address under prefix `/128` only. A host prefix (`/32` or `/128`) is the portable choice.
+    /// address under prefix `/128` only.
     #[cfg(not(target_os = "windows"))]
     pub fn with_peer(mut self, peer: IpAddr) -> Result<Self> {
         if self.ip.is_ipv4() != peer.is_ipv4() {
