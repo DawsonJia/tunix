@@ -2,11 +2,14 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 
 use crate::error::{Error, Result};
 
-/// An IP address assigned to an interface, with an optional point-to-point peer.
+/// An IP address of an interface, with the point-to-point peer it may have on Linux and macOS.
+///
+/// Windows has no peers, so `with_peer` and `peer` do not exist there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NetworkAddress {
     ip: IpAddr,
     prefix_len: u8,
+    #[cfg(not(target_os = "windows"))]
     peer: Option<IpAddr>,
 }
 
@@ -21,16 +24,18 @@ impl NetworkAddress {
         Ok(Self {
             ip,
             prefix_len,
+            #[cfg(not(target_os = "windows"))]
             peer: None,
         })
     }
 
-    /// Sets the peer address for a point-to-point interface.
+    /// Sets the address at the other end of a point-to-point link. The address then brings a
+    /// route to the peer, not to its prefix.
     ///
-    /// The peer must use the same address family as the local address.
-    /// Platform-specific restrictions are checked when the address is applied. Windows does not
-    /// support peers. macOS rejects IPv4 `/0` and requires a `/128` prefix for IPv6 peers. A host
-    /// prefix (`/32` or `/128`) is the portable choice for a point-to-point peer.
+    /// The peer must use the same address family as the local address. What else a platform
+    /// asks of a peer is checked when the address is applied: macOS takes the peer of an IPv6
+    /// address under prefix `/128` only. A host prefix (`/32` or `/128`) is the portable choice.
+    #[cfg(not(target_os = "windows"))]
     pub fn with_peer(mut self, peer: IpAddr) -> Result<Self> {
         if self.ip.is_ipv4() != peer.is_ipv4() {
             return Err(Error::InvalidAddress);
@@ -51,8 +56,20 @@ impl NetworkAddress {
     }
 
     /// Returns the point-to-point peer address, if one was configured.
+    #[cfg(not(target_os = "windows"))]
     pub fn peer(self) -> Option<IpAddr> {
         self.peer
+    }
+
+    /// This address on the interface `ifindex`, as `routex` takes it.
+    pub(crate) fn on(self, ifindex: u32) -> routex::Address {
+        routex::Address {
+            ifindex,
+            ip: self.ip,
+            prefix: self.prefix_len,
+            #[cfg(not(target_os = "windows"))]
+            peer: self.peer,
+        }
     }
 }
 
@@ -169,3 +186,7 @@ impl IntoIpAddr for &SocketAddrV6 {
         Ok((*self.ip()).into())
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/src/address.rs"]
+mod tests;

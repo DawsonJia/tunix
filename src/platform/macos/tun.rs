@@ -1,6 +1,5 @@
 use std::ffi::CStr;
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::fd::{AsRawFd, RawFd};
 use std::{io, mem};
 
@@ -8,11 +7,11 @@ use crate::Configuration;
 use crate::configuration::Layer;
 use crate::error::{Error, Result};
 use crate::interface::Interface;
+use crate::platform::posix::fd::Fd;
 use crate::platform::posix::sys::cvt;
-use crate::platform::posix::{fd::Fd, name::write_if_name};
 use libc::{c_char, c_uchar, c_uint, socklen_t};
 
-use super::sys::*;
+const UTUN_CONTROL_NAME: &str = "com.apple.net.utun_control";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TunConf {}
@@ -44,10 +43,8 @@ impl AsRawFd for Queue {
 
 pub struct Tun {
     pub(crate) name: String,
+    index: u32,
     pub(crate) queue: Queue,
-    pub(crate) ctl: Fd,
-    pub(crate) ctl_v6: Fd,
-    primary_v4: Option<crate::NetworkAddress>,
 }
 
 fn utun_unit(name: &str) -> Result<u32> {
@@ -80,8 +77,6 @@ impl Tun {
         if queue_number != 1 {
             return Err(Error::InvalidQueuesNumber);
         }
-
-        validate_addresses(&config.addresses, None)?;
 
         let tun_fd = Fd::socket(libc::AF_SYSTEM, libc::SOCK_DGRAM, libc::SYSPROTO_CONTROL)?;
 
@@ -132,113 +127,23 @@ impl Tun {
             )
         })?;
 
-        // new a control fd
-        let ctl = Fd::socket(libc::AF_INET, libc::SOCK_DGRAM, 0)?;
-        let ctl_v6 = Fd::socket(libc::AF_INET6, libc::SOCK_DGRAM, 0)?;
+        let name = unsafe {
+            CStr::from_ptr(ifname.as_ptr())
+                .to_string_lossy()
+                .to_string()
+        };
+        let index = routex::if_nametoindex(&name)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
 
         let mut tun = Self {
-            name: unsafe {
-                CStr::from_ptr(ifname.as_ptr())
-                    .to_string_lossy()
-                    .to_string()
-            },
+            name,
+            index,
             queue: Queue { tun: tun_fd },
-            ctl,
-            ctl_v6,
-            primary_v4: None,
         };
 
         tun.configure(config)?;
 
         Ok(tun)
-    }
-
-    fn ifreq(&self) -> libc::ifreq {
-        let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
-
-        write_if_name(&self.name, &mut ifr.ifr_name).expect("stored interface name must be valid");
-
-        ifr
-    }
-
-    fn set_alias_v4(&mut self, address: crate::NetworkAddress) -> Result<()> {
-        if address.peer().is_none() {
-            return self.set_primary_v4(address);
-        }
-
-        let ifar = ipv4_alias_request(&self.name, address)?;
-        if self
-            .primary_v4
-            .is_some_and(|primary| conflicts_with_peerless_primary(primary, address))
-        {
-            return Err(Error::InvalidConfig);
-        }
-
-        unsafe { siocaifaddr(self.ctl.as_raw_fd(), &ifar) }?;
-        match self.primary_v4 {
-            Some(primary) if primary.ip() == address.ip() => self.primary_v4 = Some(address),
-            None => self.primary_v4 = Some(address),
-            Some(_) => {}
-        }
-
-        Ok(())
-    }
-
-    fn set_primary_v4(&mut self, address: crate::NetworkAddress) -> Result<()> {
-        validate_address(address)?;
-
-        match self.primary_v4 {
-            Some(primary) if primary.ip() != address.ip() || primary.peer().is_some() => {
-                return Err(Error::InvalidConfig);
-            }
-            Some(_) => {}
-            None => {
-                if !is_peerless_ipv4(address) {
-                    return Err(Error::InvalidAddress);
-                }
-            }
-        }
-
-        let IpAddr::V4(ip) = address.ip() else {
-            return Err(Error::InvalidAddress);
-        };
-        let address_request = ipv4_ifreq(&self.name, ip)?;
-        let netmask_request = ipv4_ifreq(&self.name, ipv4_netmask(address.prefix_len()))?;
-        let is_new = self.primary_v4.is_none();
-
-        unsafe { siocsifaddr(self.ctl.as_raw_fd(), &address_request) }?;
-        if is_new {
-            self.primary_v4 = Some(address);
-        }
-
-        let result = (|| {
-            unsafe { siocsifnetmask(self.ctl.as_raw_fd(), &netmask_request) }?;
-            // SIOCSIFNETMASK does not recompute ia_net and ia_subnet. Reapply the address so XNU
-            // derives them from the requested mask.
-            unsafe { siocsifaddr(self.ctl.as_raw_fd(), &address_request) }?;
-            Ok(())
-        })();
-
-        if result.is_ok() {
-            self.primary_v4 = Some(address);
-        } else if is_new {
-            if unsafe { siocdifaddr(self.ctl.as_raw_fd(), &address_request) }.is_ok() {
-                self.primary_v4 = None;
-            }
-        } else {
-            // TODO: Restore the previous prefix if an existing primary update fails after the
-            // mask ioctl.
-        }
-
-        result
-    }
-
-    fn set_alias_v6(&mut self, address: crate::NetworkAddress) -> Result<()> {
-        let ifar = ipv6_alias_request(&self.name, address)?;
-
-        unsafe { siocaifaddr_in6(self.ctl_v6.as_raw_fd(), &ifar) }?;
-
-        Ok(())
     }
 
     pub fn has_packet_information(&self) -> bool {
@@ -267,22 +172,6 @@ impl AsRawFd for Tun {
 impl Interface for Tun {
     type Queue = Queue;
 
-    fn add_addresses(&mut self, addresses: &[crate::NetworkAddress]) -> Result<()> {
-        if let Some(primary) = validate_addresses(addresses, self.primary_v4)? {
-            self.add_address(primary)?;
-        }
-
-        for address in addresses
-            .iter()
-            .copied()
-            .filter(|address| !is_peerless_ipv4(*address))
-        {
-            self.add_address(address)?;
-        }
-
-        Ok(())
-    }
-
     fn name(&self) -> Result<String> {
         Ok(self.name.clone())
     }
@@ -291,201 +180,13 @@ impl Interface for Tun {
         Err(Error::InvalidName)
     }
 
-    fn enable(&mut self, value: bool) -> Result<()> {
-        let mut flags = self.flags(None)?;
-
-        if value {
-            flags |= libc::IFF_UP as i16 | libc::IFF_RUNNING as i16;
-        } else {
-            flags &= !(libc::IFF_UP as i16);
-        }
-
-        self.flags(Some(flags))?;
-
-        Ok(())
-    }
-    fn flags(&self, flags: Option<i16>) -> Result<i16> {
-        let mut ifr = self.ifreq();
-
-        if let Some(flags) = flags {
-            ifr.ifr_ifru.ifru_flags = flags;
-            unsafe { siocsifflags(self.ctl.as_raw_fd(), &ifr) }?;
-        } else {
-            unsafe { siocgifflags(self.ctl.as_raw_fd(), &mut ifr) }?;
-        }
-
-        Ok(unsafe { ifr.ifr_ifru.ifru_flags })
-    }
-
-    fn add_address(&mut self, address: crate::NetworkAddress) -> Result<()> {
-        match address.ip() {
-            IpAddr::V4(_) => self.set_alias_v4(address),
-            IpAddr::V6(_) => self.set_alias_v6(address),
-        }
-    }
-
-    fn mtu(&self) -> Result<i32> {
-        let mut ifr = self.ifreq();
-        unsafe { siocgifmtu(self.ctl.as_raw_fd(), &mut ifr) }?;
-
-        Ok(unsafe { ifr.ifr_ifru.ifru_mtu })
-    }
-
-    fn set_mtu(&mut self, mtu: i32) -> Result<()> {
-        let mut ifr = self.ifreq();
-        ifr.ifr_ifru.ifru_mtu = mtu;
-
-        unsafe { siocsifmtu(self.ctl.as_raw_fd(), &ifr) }?;
-
-        Ok(())
+    fn index(&self) -> u32 {
+        self.index
     }
 
     fn queue(&mut self) -> &mut Self::Queue {
         &mut self.queue
     }
-}
-
-fn ipv4_sockaddr(addr: Ipv4Addr) -> libc::sockaddr {
-    let mut socket_addr: libc::sockaddr_in = unsafe { mem::zeroed() };
-    socket_addr.sin_len = mem::size_of::<libc::sockaddr_in>() as u8;
-    socket_addr.sin_family = libc::AF_INET as _;
-    socket_addr.sin_addr = libc::in_addr {
-        s_addr: u32::from_ne_bytes(addr.octets()),
-    };
-
-    unsafe { mem::transmute(socket_addr) }
-}
-
-fn ipv4_ifreq(name: &str, addr: Ipv4Addr) -> Result<libc::ifreq> {
-    let mut ifr: libc::ifreq = unsafe { mem::zeroed() };
-    write_if_name(name, &mut ifr.ifr_name)?;
-    ifr.ifr_ifru.ifru_addr = ipv4_sockaddr(addr);
-
-    Ok(ifr)
-}
-
-fn is_peerless_ipv4(address: crate::NetworkAddress) -> bool {
-    address.ip().is_ipv4() && address.peer().is_none()
-}
-
-fn conflicts_with_peerless_primary(
-    primary: crate::NetworkAddress,
-    address: crate::NetworkAddress,
-) -> bool {
-    is_peerless_ipv4(primary) && primary.ip() == address.ip() && address.peer().is_some()
-}
-
-fn validate_address(address: crate::NetworkAddress) -> Result<()> {
-    // TODO: Support IPv4 /0 if XNU exposes a configuration path that preserves a zero netmask.
-    if address.ip().is_ipv4() && address.prefix_len() == 0 {
-        return Err(Error::InvalidAddress);
-    }
-    if address.ip().is_ipv6() && address.peer().is_some() && address.prefix_len() != 128 {
-        return Err(Error::InvalidAddress);
-    }
-
-    Ok(())
-}
-
-fn validate_addresses(
-    addresses: &[crate::NetworkAddress],
-    configured_primary: Option<crate::NetworkAddress>,
-) -> Result<Option<crate::NetworkAddress>> {
-    let mut primary = None;
-    for &address in addresses {
-        validate_address(address)?;
-        if is_peerless_ipv4(address) {
-            if primary.is_some() {
-                return Err(Error::InvalidConfig);
-            }
-            primary = Some(address);
-        }
-    }
-
-    let has_collision = |primary| {
-        addresses
-            .iter()
-            .copied()
-            .any(|address| conflicts_with_peerless_primary(primary, address))
-    };
-    if primary.is_some_and(has_collision) || configured_primary.is_some_and(has_collision) {
-        return Err(Error::InvalidConfig);
-    }
-
-    Ok(primary)
-}
-
-fn ipv6_sockaddr(addr: Ipv6Addr) -> libc::sockaddr_in6 {
-    let mut socket_addr: libc::sockaddr_in6 = unsafe { mem::zeroed() };
-    socket_addr.sin6_len = mem::size_of::<libc::sockaddr_in6>() as u8;
-    socket_addr.sin6_family = libc::AF_INET6 as _;
-    socket_addr.sin6_addr = libc::in6_addr {
-        s6_addr: addr.octets(),
-    };
-
-    socket_addr
-}
-
-fn ipv4_alias_request(name: &str, address: crate::NetworkAddress) -> Result<ifaliasreq> {
-    validate_address(address)?;
-
-    let Some(peer) = address.peer() else {
-        // Peerless IPv4 uses the primary-address ioctl path instead of this alias request.
-        return Err(Error::InvalidConfig);
-    };
-    let (IpAddr::V4(addr), IpAddr::V4(peer)) = (address.ip(), peer) else {
-        return Err(Error::InvalidAddress);
-    };
-
-    let mut ifar: ifaliasreq = unsafe { mem::zeroed() };
-    write_if_name(name, &mut ifar.ifra_name)?;
-
-    ifar.ifra_addr = ipv4_sockaddr(addr);
-    ifar.ifra_broadaddr = ipv4_sockaddr(peer);
-    ifar.ifra_mask = ipv4_sockaddr(ipv4_netmask(address.prefix_len()));
-
-    Ok(ifar)
-}
-
-fn ipv6_alias_request(name: &str, address: crate::NetworkAddress) -> Result<in6_aliasreq> {
-    validate_address(address)?;
-
-    let IpAddr::V6(addr) = address.ip() else {
-        return Err(Error::InvalidAddress);
-    };
-    let peer = match address.peer() {
-        Some(IpAddr::V6(peer)) => Some(peer),
-        Some(IpAddr::V4(_)) => return Err(Error::InvalidAddress),
-        None => None,
-    };
-    let mut ifar: in6_aliasreq = unsafe { mem::zeroed() };
-    write_if_name(name, &mut ifar.ifra_name)?;
-
-    ifar.ifra_addr = ipv6_sockaddr(addr);
-    if let Some(peer) = peer {
-        ifar.ifra_dstaddr = ipv6_sockaddr(peer);
-    }
-    ifar.ifra_prefixmask = ipv6_sockaddr(ipv6_netmask(address.prefix_len()));
-    ifar.ifra_lifetime.ia6t_vltime = u32::MAX;
-    ifar.ifra_lifetime.ia6t_pltime = u32::MAX;
-
-    Ok(ifar)
-}
-
-fn ipv4_netmask(prefix_len: u8) -> Ipv4Addr {
-    Ipv4Addr::from(
-        u32::MAX
-            .checked_shl(32 - u32::from(prefix_len))
-            .unwrap_or(0),
-    )
-}
-
-fn ipv6_netmask(prefix_len: u8) -> Ipv6Addr {
-    Ipv6Addr::from(
-        u128::MAX
-            .checked_shl(128 - u32::from(prefix_len))
-            .unwrap_or(0),
-    )
 }
 
 impl Read for Tun {

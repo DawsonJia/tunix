@@ -2,7 +2,7 @@ use crate::{
     configuration::{Configuration, Layer},
     error::{Error, Result},
     interface::Interface,
-    platform::posix::{fd::Fd, name::write_if_name},
+    platform::posix::fd::Fd,
 };
 use libc::{c_int, c_short};
 use std::{
@@ -12,7 +12,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use super::sys::*;
+use super::{name::write_if_name, sys::*};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TunConf {
@@ -53,8 +53,8 @@ impl AsRawFd for Queue {
 
 pub struct Tun {
     name: Arc<Mutex<String>>,
+    index: u32,
     queue: Queue,
-    ctl: Arc<Mutex<Fd>>,
     layer: Layer,
 }
 
@@ -70,11 +70,7 @@ impl Tun {
     }
 
     pub fn new_multi_queue(config: &Configuration) -> Result<Vec<Self>> {
-        let ctl = Fd::socket(libc::AF_INET, libc::SOCK_DGRAM, 0)?;
-        let ctl = Arc::new(Mutex::new(ctl));
-        let name = Arc::new(Mutex::new(String::new()));
-
-        let mut tuns = Vec::new();
+        let mut queues = Vec::new();
         let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
 
         if let Some(name) = config.name.as_ref() {
@@ -106,37 +102,35 @@ impl Tun {
                 )
             }?;
 
-            let queue = Queue {
+            queues.push(Queue {
                 tun: tun_fd,
                 pi_enabled: pi,
-            };
-            let tun = Self {
-                name: name.clone(),
-                queue,
-                ctl: ctl.clone(),
-                layer: config.layer,
-            };
-            tuns.push(tun);
+            });
         }
 
+        // The kernel wrote the name it gave the interface back into the request.
         let name = unsafe {
             CStr::from_ptr(ifr.ifr_name.as_ptr())
                 .to_string_lossy()
                 .to_string()
         };
-        *tuns[0].name.lock().unwrap() = name;
+        let index = routex::if_nametoindex(&name)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+        let name = Arc::new(Mutex::new(name));
+
+        let mut tuns: Vec<Self> = queues
+            .into_iter()
+            .map(|queue| Self {
+                name: name.clone(),
+                index,
+                queue,
+                layer: config.layer,
+            })
+            .collect();
 
         tuns[0].configure(config)?;
 
         Ok(tuns)
-    }
-
-    fn ifreq(&self) -> libc::ifreq {
-        let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
-        let name = self.name.lock().unwrap();
-        write_if_name(&name, &mut ifr.ifr_name).expect("stored interface name must be valid");
-
-        ifr
     }
 
     pub fn set_nonblocking(&self) -> io::Result<()> {
@@ -164,63 +158,21 @@ impl Interface for Tun {
     }
 
     fn set_name(&mut self, new_name: &str) -> Result<()> {
-        let mut ifr = self.ifreq();
+        let mut name = self.name.lock().unwrap();
+        let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
+        write_if_name(&name, &mut ifr.ifr_name)?;
         unsafe { write_if_name(new_name, &mut ifr.ifr_ifru.ifru_newname)? };
 
-        unsafe { siocsifname(self.ctl.lock().unwrap().as_raw_fd(), &ifr) }?;
+        let socket = Fd::socket(libc::AF_INET, libc::SOCK_DGRAM, 0)?;
+        unsafe { siocsifname(socket.as_raw_fd(), &ifr) }?;
 
-        *self.name.lock().unwrap() = new_name.into();
-
-        Ok(())
-    }
-
-    fn enable(&mut self, value: bool) -> Result<()> {
-        let mut flags = self.flags(None)?;
-
-        if value {
-            flags |= libc::IFF_UP as i16 | libc::IFF_RUNNING as i16;
-        } else {
-            flags &= !libc::IFF_UP as i16;
-        }
-
-        self.flags(Some(flags))?;
+        *name = new_name.into();
 
         Ok(())
     }
 
-    fn flags(&self, flags: Option<i16>) -> Result<i16> {
-        let mut ifr = self.ifreq();
-
-        if let Some(flags) = flags {
-            ifr.ifr_ifru.ifru_flags = flags;
-            unsafe { siocsifflags(self.ctl.lock().unwrap().as_raw_fd(), &ifr) }?;
-        } else {
-            unsafe { siocgifflags(self.ctl.lock().unwrap().as_raw_fd(), &mut ifr) }?;
-        }
-
-        Ok(unsafe { ifr.ifr_ifru.ifru_flags })
-    }
-
-    fn add_address(&mut self, address: crate::NetworkAddress) -> Result<()> {
-        add_address(&self.name.lock().unwrap(), address)?;
-        Ok(())
-    }
-
-    fn mtu(&self) -> Result<i32> {
-        let mut ifr = self.ifreq();
-
-        unsafe { siocgifmtu(self.ctl.lock().unwrap().as_raw_fd(), &mut ifr) }?;
-
-        Ok(unsafe { ifr.ifr_ifru.ifru_mtu })
-    }
-
-    fn set_mtu(&mut self, mtu: i32) -> Result<()> {
-        let mut ifr = self.ifreq();
-        ifr.ifr_ifru.ifru_mtu = mtu;
-
-        unsafe { siocsifmtu(self.ctl.lock().unwrap().as_raw_fd(), &ifr) }?;
-
-        Ok(())
+    fn index(&self) -> u32 {
+        self.index
     }
 
     fn queue(&mut self) -> &mut Self::Queue {

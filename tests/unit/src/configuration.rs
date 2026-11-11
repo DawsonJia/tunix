@@ -18,6 +18,7 @@ fn invalid_prefix_is_reported_by_build() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn mixed_family_peer_is_reported_by_build() {
     let mut config = Configuration::default();
     let result = config.address_with_peer("192.0.2.1", 32, "fd00::1").build();

@@ -22,8 +22,9 @@ pub struct Configuration {
     pub(crate) addresses: Vec<NetworkAddress>,
     // Keep invalid address input sticky so a later setter call cannot silently hide it.
     pub(crate) invalid_address: bool,
-    pub(crate) mtu: Option<i32>,
+    pub(crate) mtu: Option<u32>,
     // Set the interface to be enabled once crated
+    #[cfg(not(target_os = "windows"))]
     pub(crate) enabled: bool,
     pub(crate) layer: Layer,
     pub(crate) queues: Option<usize>,
@@ -42,10 +43,18 @@ impl Configuration {
 
     /// Adds an interface address.
     ///
-    /// Call this once for each address family to configure a dual-stack interface.
-    /// macOS supports one peerless IPv4 primary and applies it before IPv4 aliases regardless of
-    /// insertion order. Additional IPv4 addresses require a peer, and IPv4 prefixes must be
-    /// between `/1` and `/32`. A peerful IPv4 cannot reuse the peerless primary's local address.
+    /// Call this once for each address family to configure a dual-stack interface. The
+    /// addresses are set in the order they were added, each as [`Interface::add_address`] sets
+    /// it: one that the interface has already is no error. One that the platform refuses fails
+    /// the build with [`Error::Io`], and the interface goes with it.
+    ///
+    /// - macOS has no prefix `/0`. A utun is point-to-point, where an IPv4 address without a
+    ///   peer is the first IPv4 address of the interface or none: add at most one, before the
+    ///   IPv4 addresses with a peer. It brings no route: the caller adds the one to its prefix.
+    /// - Windows: an adapter of the configured name that is there already is opened with the
+    ///   addresses it has, and one of them that is added again takes the new prefix.
+    ///
+    /// [`Interface::add_address`]: crate::interface::Interface::add_address
     ///
     /// ```
     /// let mut config = tunix::Configuration::default();
@@ -61,16 +70,19 @@ impl Configuration {
         self.push_address(address)
     }
 
-    /// Adds an interface address with a point-to-point peer.
+    /// Adds an interface address with a point-to-point peer, set as those of
+    /// [`address`](Self::address) are. The address brings a route to the peer, not to its
+    /// prefix.
     ///
-    /// Linux and macOS support peers. Windows returns an unsupported-operation error. macOS
-    /// rejects IPv4 `/0`, rejects a local address collision with its peerless primary, and requires
-    /// a `/128` prefix when an IPv6 peer is present.
+    /// Not on Windows, which has no peers. macOS has no prefix `/0`, and takes the peer of an
+    /// IPv6 address under prefix `/128` only, and only a peer that the routing table has no
+    /// host route to yet. A host prefix (`/32` or `/128`) is the portable choice.
     ///
     /// ```
     /// let mut config = tunix::Configuration::default();
     /// config.address_with_peer("192.0.2.1", 32, "192.0.2.2");
     /// ```
+    #[cfg(not(target_os = "windows"))]
     pub fn address_with_peer<A: IntoIpAddr, P: IntoIpAddr>(
         &mut self,
         value: A,
@@ -85,9 +97,8 @@ impl Configuration {
         self.push_address(address)
     }
 
-    /// Adds structurally validated interface addresses.
-    ///
-    /// Platform-specific peer restrictions are checked when the interface is configured.
+    /// Adds structurally validated interface addresses, set after those added before them, as
+    /// those of [`address`](Self::address) are.
     pub fn addresses<I>(&mut self, values: I) -> &mut Self
     where
         I: IntoIterator<Item = NetworkAddress>,
@@ -105,16 +116,29 @@ impl Configuration {
         self
     }
 
-    pub fn mtu(&mut self, value: i32) -> &mut Self {
+    /// Sets the MTU of the interface. Without it the interface keeps the MTU the platform gave
+    /// it.
+    ///
+    /// An MTU the interface does not take is the platform's to refuse, and fails the build.
+    /// Windows has an MTU for each of IPv4 and IPv6 and sets both, or neither for an MTU under
+    /// the 1280 that IPv6 takes.
+    pub fn mtu(&mut self, value: u32) -> &mut Self {
         self.mtu = Some(value);
         self
     }
 
+    /// Brings the interface up once its addresses and MTU are set.
+    ///
+    /// Not on Windows: a Wintun adapter is up for as long as its session, which is as long as
+    /// its `Tun`.
+    #[cfg(not(target_os = "windows"))]
     pub fn up(&mut self) -> &mut Self {
         self.enabled = true;
         self
     }
 
+    /// Leaves the interface down, as it is unless [`up`](Self::up) was called. Not on Windows.
+    #[cfg(not(target_os = "windows"))]
     pub fn down(&mut self) -> &mut Self {
         self.enabled = false;
         self
